@@ -31,6 +31,8 @@ Panel {
   readonly property string mode: String(setting("mode", "dark"))
   readonly property string extractMode: String(setting("extractMode", "normal"))
   readonly property bool applyTheme: setting("applyTheme", true) !== false && setting("applyTheme", true) !== "false"
+  readonly property bool screensaver: setting("screensaver", false) === true || setting("screensaver", false) === "true"
+  readonly property string screensaverSize: String(setting("screensaverSize", "120x29"))
 
   function open() {
     openedFromHotkey = false
@@ -301,6 +303,30 @@ Panel {
             onChanged: function(v) { if (v !== root.extractMode) root.update("extractMode", v) }
           }
 
+          Toggle {
+            width: parent.width
+            label: "Use as screensaver"
+            description: root.state.screensaver === "magick-missing"
+              ? "Needs ImageMagick — run: bing-wallpaper install-deps"
+              : "Draw today's picture as the Omarchy screensaver art"
+            checked: root.screensaver
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.update("screensaver", !root.screensaver)
+          }
+
+          Dropdown {
+            width: parent.width
+            label: "Screensaver size"
+            value: root.screensaverSize
+            options: Model.SCREENSAVER_SIZES
+            enabled: root.screensaver
+            opacity: root.screensaver ? 1 : 0.5
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(v) { if (v !== root.screensaverSize) root.update("screensaverSize", v) }
+          }
+
           // ---- Status
           Column {
             width: parent.width
@@ -311,6 +337,18 @@ Panel {
               textFormat: Text.PlainText
               text: root.busy ? "Fetching today's image…" : Model.statusLine(root.state)
               color: root.state.status === "error" ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              visible: text !== ""
+              textFormat: Text.PlainText
+              text: Model.screensaverLine(root.state)
+              color: root.state.screensaver === "magick-missing" || root.state.screensaver === "failed"
+                ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap

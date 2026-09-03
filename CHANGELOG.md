@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-09-03
+
+### Added
+
+- **Screensaver support**, off by default. With `screensaver` on, today's
+  picture is rendered as ASCII art into
+  `~/.config/omarchy/branding/screensaver.txt`, so the Omarchy screensaver
+  dissolves the day's photograph instead of the logo. `screensaverSize` picks
+  the art size; the toggle takes effect immediately rather than waiting for the
+  next scheduled fetch.
+- The previous screensaver art is backed up on first use and restored exactly
+  when the setting is turned off. Art the user has edited themselves is never
+  overwritten.
+- `bing-wallpaper install-deps` installs ImageMagick, which the screensaver
+  needs and a stock Omarchy box does not necessarily have.
+
 ## [0.2.0] - 2026-09-03
 
 ### Added

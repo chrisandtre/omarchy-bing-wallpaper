@@ -41,6 +41,18 @@ var EXTRACT_MODES = [
   { value: "high-contrast", label: "High contrast" }
 ]
 
+// Terminal cells are about 2.3x taller than they are wide, so a 16:9 picture
+// needs roughly four times as many columns as rows to look square. These all
+// hold that ratio. "Medium" is the default because it still fits the smallest
+// canvas worth planning for -- a 1080p screen at the screensaver's font size
+// is about 133x32 cells.
+var SCREENSAVER_SIZES = [
+  { value: "80x20", label: "Small" },
+  { value: "120x29", label: "Medium" },
+  { value: "160x39", label: "Large" },
+  { value: "200x48", label: "Extra large" }
+]
+
 function parseState(text) {
   try {
     var parsed = JSON.parse(String(text || ""))
@@ -96,6 +108,17 @@ function statusLine(state) {
   if (theme === "failed" || theme === "apply-failed") return "Theme generation failed; wallpaper only"
   if (state.applyTheme === false || state.applyTheme === "false") return "Wallpaper only (re-theming is off)"
   return "Theme and wallpaper up to date"
+}
+
+// Second status line, only when the screensaver has something to say.
+function screensaverLine(state) {
+  if (!state) return ""
+  var status = String(state.screensaver || "")
+  if (status === "magick-missing")
+    return "Screensaver needs ImageMagick — run: bing-wallpaper install-deps"
+  if (status === "failed") return "Screensaver art could not be rendered"
+  if (status === "applied") return "Screensaver shows today's picture"
+  return ""
 }
 
 function nextCheckText(state) {

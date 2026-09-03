@@ -11,6 +11,7 @@
 #   bing-wallpaper set <key> <val>   Update one setting inline in shell.json
 #   bing-wallpaper open              Open today's story in the browser
 #   bing-wallpaper next              Print when the next Bing image is expected
+#   bing-wallpaper install-deps      Install ImageMagick (needed by the screensaver)
 #
 # Settings are read from the plugin's inline entry in ~/.config/omarchy/shell.json
 # (see README). Every setting can also be overridden with an environment variable
@@ -26,8 +27,11 @@ STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 SHELL_JSON="$CONFIG_HOME/omarchy/shell.json"
 THEME_DIR="$CONFIG_HOME/omarchy/themes/$THEME_NAME"
 BACKGROUNDS_DIR="$THEME_DIR/backgrounds"
+BRANDING_DIR="$CONFIG_HOME/omarchy/branding"
+SCREENSAVER_FILE="$BRANDING_DIR/screensaver.txt"
 STATE_DIR="$STATE_HOME/bing-wallpaper"
 STATE_FILE="$STATE_DIR/state.json"
+SCREENSAVER_BACKUP="$STATE_DIR/screensaver.txt.orig"
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bing-wallpaper.lock"
 
 BING_HOST="https://www.bing.com"
@@ -43,6 +47,8 @@ declare -A DEFAULTS=(
   [lightStart]="7"
   [lightEnd]="19"
   [resolution]="UHD"
+  [screensaver]="false"
+  [screensaverSize]="120x29"
 )
 
 log() { printf '%s\n' "$*" >&2; }
@@ -107,6 +113,11 @@ valid_setting_value() {
     lightStart)    [[ $value =~ ^[0-9]+$ ]] && (( value >= 0 && value <= 23 )) ;;
     lightEnd)      [[ $value =~ ^[0-9]+$ ]] && (( value >= 0 && value <= 24 )) ;;
     resolution)    [[ $value =~ ^(UHD|1920x1200|1920x1080)$ ]] ;;
+    screensaver)   [[ $value =~ ^(true|false)$ ]] ;;
+    screensaverSize)
+      [[ $value =~ ^([0-9]{2,3})x([0-9]{2,3})$ ]] &&
+        (( BASH_REMATCH[1] >= 20 && BASH_REMATCH[1] <= 400 )) &&
+        (( BASH_REMATCH[2] >= 8 && BASH_REMATCH[2] <= 100 )) ;;
     *) return 1 ;;
   esac
 }
@@ -336,6 +347,125 @@ apply_theme_and_background() {
   omarchy-theme-bg-set "$image" >/dev/null 2>&1
 }
 
+# -------------------------------------------------------------- screensaver
+
+# Omarchy's screensaver is one plain-text file. omarchy-screensaver loops
+#
+#   ttfx -i ~/.config/omarchy/branding/screensaver.txt --random-effect ...
+#
+# re-reading the file on every cycle, so writing it *is* the whole integration:
+# nothing to restart, and a screensaver that happens to be running picks the new
+# picture up on its next effect.
+#
+# We deliberately do not use omarchy-transcode-ascii. It is a 1-bit hard
+# threshold built for logos, and a photograph through it comes out a solid
+# block. A luminance ramp keeps the tonal range a picture needs.
+
+SCREENSAVER_RAMP=' .:-=+*#%@'
+
+screensaver_sum() {
+  [[ -f $SCREENSAVER_FILE ]] || return 0
+  cksum <"$SCREENSAVER_FILE" | awk '{ print $1 }'
+}
+
+# Render the image as a grid of ASCII characters chosen by brightness.
+render_screensaver_art() {
+  local image="$1" cols="$2" rows="$3"
+  magick "$image" -auto-orient -colorspace Gray -normalize \
+    -resize "${cols}x${rows}!" -depth 8 -compress none pgm:- 2>/dev/null |
+    awk -v ramp="$SCREENSAVER_RAMP" '
+      NR == 1 { next }                       # P2 magic
+      /^#/ { next }
+      { for (i = 1; i <= NF; i++) token[++count] = $i }
+      END {
+        width = token[1]; height = token[2]; maxval = token[3]; offset = 4
+        levels = length(ramp)
+        if (width == "" || height == "" || maxval + 0 == 0) exit 1
+        for (y = 0; y < height; y++) {
+          line = ""
+          for (x = 0; x < width; x++) {
+            value = token[offset + y * width + x] / maxval
+            line = line substr(ramp, int(value * (levels - 1) + 0.5) + 1, 1)
+          }
+          sub(/[ ]+$/, "", line)
+          print line
+        }
+      }'
+}
+
+# Terminal cells are roughly 2.3x taller than they are wide, so a 16:9 picture
+# needs about four times as many columns as rows to look square on screen. The
+# 120x29 default is close to that ratio and still fits the smallest canvas we
+# can reasonably expect -- a 1080p display at the screensaver's font size is
+# about 133x32 cells. There is no per-monitor sizing here on purpose: ttfx
+# centres the art without scaling it, and Omarchy's own logo is a fixed 79x28
+# on every display, so one fixed size is native behaviour rather than a
+# compromise.
+#
+# Returns 2 when ImageMagick is missing, 1 when the render fails.
+screensaver_write() {
+  local image="$1" size="${SETTINGS[screensaverSize]}" cols rows art tmp
+  command -v magick >/dev/null 2>&1 || return 2
+  cols="${size%x*}"
+  rows="${size#*x}"
+
+  art=$(render_screensaver_art "$image" "$cols" "$rows") || return 1
+  [[ -n $art ]] || return 1
+
+  mkdir -p "$BRANDING_DIR" "$STATE_DIR"
+  # branding/screensaver.txt belongs to the user -- `omarchy branding
+  # screensaver` writes it too. Keep one copy of whatever was there before we
+  # first touched it so the toggle is reversible.
+  if [[ ! -f $SCREENSAVER_BACKUP && -f $SCREENSAVER_FILE ]]; then
+    cp "$SCREENSAVER_FILE" "$SCREENSAVER_BACKUP"
+  fi
+
+  tmp=$(mktemp "$SCREENSAVER_FILE.XXXXXX") || return 1
+  printf '%s\n' "$art" >"$tmp"
+  mv "$tmp" "$SCREENSAVER_FILE" || { rm -f "$tmp"; return 1; }
+  write_state screensaverSum="$(screensaver_sum)"
+}
+
+# Put the user's own art back -- but only if the file on disk is still the one
+# we wrote. If they have edited it since, it is theirs and we leave it alone.
+screensaver_restore() {
+  [[ -f $SCREENSAVER_BACKUP ]] || return 0
+  local recorded current
+  recorded=$(state_get screensaverSum)
+  current=$(screensaver_sum)
+  [[ -n $current && $current == "$recorded" ]] || return 0
+  cp "$SCREENSAVER_BACKUP" "$SCREENSAVER_FILE" || return 1
+  rm -f "$SCREENSAVER_BACKUP"
+  write_state screensaverSum=""
+}
+
+# Bring the screensaver in line with the current setting, using the picture we
+# already have. Called after a fetch and after the toggle changes.
+sync_screensaver() {
+  local image="$1" status
+
+  if [[ ${SETTINGS[screensaver]} != true ]]; then
+    screensaver_restore
+    write_state screensaverOn=false screensaver=off
+    return 0
+  fi
+
+  if [[ ! -f $image ]]; then
+    write_state screensaverOn=true screensaver=pending
+    return 0
+  fi
+
+  screensaver_write "$image"
+  case $? in
+    0) status="applied" ;;
+    2) status="magick-missing"
+       log "imagemagick is not installed; run 'bing-wallpaper install-deps'" ;;
+    *) status="failed" ;;
+  esac
+  write_state screensaverOn=true screensaver="$status" \
+    screensaverSize="${SETTINGS[screensaverSize]}"
+}
+
 notify() {
   [[ ${SETTINGS[notify]} == true ]] || return 0
   command -v omarchy-notification-send >/dev/null 2>&1 || return 0
@@ -370,6 +500,14 @@ cmd_fetch() {
   local market="${SETTINGS[market]}" mode now next_check next_flip
   mode=$(effective_mode)
   now=$(now_epoch)
+
+  # The screensaver is rendered from the picture we already have, so the
+  # toggle can be honoured right now -- it must not wait on the fetch schedule.
+  if [[ $(state_get screensaverOn) != "${SETTINGS[screensaver]}" ]] ||
+     [[ ${SETTINGS[screensaver]} == true &&
+        $(state_get screensaverSize) != "${SETTINGS[screensaverSize]}" ]]; then
+    sync_screensaver "$(state_get image)"
+  fi
 
   # Cheap path: nothing can have changed yet, and the palette mode is the
   # same. The service ticks often so this has to be nearly free.
@@ -456,6 +594,11 @@ cmd_fetch() {
     fi
   fi
 
+  # A new picture needs new art. Toggle and size changes were handled above.
+  if (( changed )) && [[ ${SETTINGS[screensaver]} == true ]]; then
+    sync_screensaver "$image"
+  fi
+
   prune_backgrounds
 
   write_state \
@@ -485,6 +628,21 @@ cmd_open() {
   fi
 }
 
+# The screensaver needs ImageMagick, which is not guaranteed on a stock
+# Omarchy box. Installing it needs a sudo password, so this has to be run from a
+# terminal -- the panel launches one rather than trying to do it in the service.
+cmd_install_deps() {
+  if command -v magick >/dev/null 2>&1; then
+    echo "ImageMagick is already installed."
+    return 0
+  fi
+  command -v omarchy-pkg-add >/dev/null 2>&1 ||
+    fail "omarchy-pkg-add not found; install the 'imagemagick' package manually"
+  echo "Installing ImageMagick (needed to render the screensaver)..."
+  omarchy-pkg-add imagemagick || fail "could not install imagemagick"
+  echo "Done. Turn the screensaver setting on again to render today's picture."
+}
+
 cmd_next() {
   local next
   next=$(state_get nextCheck)
@@ -500,11 +658,20 @@ main() {
     fetch) cmd_fetch "$@" ;;
     status) read_state | jq . ;;
     settings) print_settings ;;
-    set) [[ $# -eq 2 ]] || fail "usage: bing-wallpaper set <key> <value>"; set_setting "$1" "$2" ;;
+    set)
+      [[ $# -eq 2 ]] || fail "usage: bing-wallpaper set <key> <value>"
+      set_setting "$1" "$2"
+      # The screensaver toggle should take effect now, not at tomorrow's fetch.
+      if [[ $1 == screensaver || $1 == screensaverSize ]]; then
+        load_settings
+        sync_screensaver "$(state_get image)"
+      fi
+      ;;
     open) cmd_open ;;
     next) cmd_next ;;
+    install-deps) cmd_install_deps ;;
     -h | --help | help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) fail "unknown command '$cmd' (fetch|status|settings|set|open|next)" ;;
+    *) fail "unknown command '$cmd' (fetch|status|settings|set|open|next|install-deps)" ;;
   esac
 }
 

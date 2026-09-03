@@ -40,7 +40,12 @@ different mornings:
 - **Robust scheduling**: knows when Bing's next image is due, survives suspend and
   offline stretches, never hammers the API
 - **Wallpaper-only mode** if you would rather keep your own theme
-- **No sudo or pkexec is required.** Everything happens in your home directory.
+- **Matching screensaver**, off by default: today's picture drawn as ASCII art
+  in place of the Omarchy logo, dissolved by the same `ttfx` effects
+- **No sudo or pkexec is required** for anything the plugin does on its own.
+  Everything happens in your home directory. (The one exception is installing
+  ImageMagick for the screensaver, which is an ordinary package install you
+  run yourself.)
 
 ## How is this different from the other Bing plugins?
 
@@ -60,6 +65,7 @@ and a settings panel to steer it all.
 | Omarchy 4.x | Quickshell-based `omarchy-shell` plugin host | The plugin is a standard shell plugin |
 | `curl`, `jq`, `file` | Fetching and parsing Bing's API, checking downloads | Present on every stock Omarchy install |
 | [Aether](https://github.com/omacom/aether) | Extracting a palette from each picture | Optional. Without it the plugin sets the wallpaper only and says so in the panel. `omarchy pkg aur add aether` |
+| `magick` (ImageMagick) | Rendering the screensaver art | Optional, and only when the screensaver setting is on. `bing-wallpaper install-deps` installs it |
 
 ## Install
 
@@ -105,6 +111,8 @@ options, so nothing else on your system is modified.
 | `retentionDays` | `7` | How many days of images to keep |
 | `notify` | `true` | Desktop notification when a new picture lands |
 | `resolution` | `UHD` | Preferred download size; falls back to `1920x1200`, then `1920x1080` |
+| `screensaver` | `false` | Draw today's picture as the Omarchy screensaver art |
+| `screensaverSize` | `120x29` | Art size in terminal cells: `80x20`, `120x29`, `160x39`, `200x48` |
 | `showTitle` | `true` | Show the title next to the icon in the bar |
 | `maxTitleChars` | `28` | Truncate long titles in the bar |
 
@@ -113,6 +121,42 @@ Example entry in `shell.json`:
 ```json
 { "id": "io.github.chrisandtre.bing-wallpaper", "market": "en-GB", "mode": "auto", "extractMode": "muted" }
 ```
+
+## Screensaver
+
+Off by default. Turn **Use as screensaver** on in the panel and today's picture
+is drawn as ASCII art in place of the Omarchy logo, dissolved by the same random
+`ttfx` effects as always — the vibe is unchanged, the picture is not.
+
+Omarchy's screensaver is a single plain-text file. `omarchy-screensaver` loops
+
+```sh
+ttfx -i ~/.config/omarchy/branding/screensaver.txt --random-effect ...
+```
+
+re-reading it every cycle, so writing that file is the whole integration. There
+is nothing to restart, and a screensaver that is already running picks up the
+new picture on its next effect.
+
+**On sizing.** `ttfx` centres the art without scaling it, and Omarchy's own logo
+is a fixed 79x28 on every display regardless of monitor, so this plugin uses a
+fixed size too rather than trying to adapt per screen. Terminal cells are about
+2.3x taller than they are wide, so the presets keep a 16:9 picture looking
+square. The `120x29` default still fits the smallest canvas worth planning for
+(a 1080p display at the screensaver's font size is roughly 133x32 cells); the
+larger presets need a bigger screen and will be clipped on a small one.
+
+**On your own art.** `branding/screensaver.txt` belongs to you — `omarchy
+branding screensaver` writes it too. The first time the plugin touches it, your
+existing art is copied to `~/.local/state/bing-wallpaper/screensaver.txt.orig`,
+and turning the setting back off restores it exactly. If you have edited the
+file yourself since, the plugin leaves it alone rather than overwriting your
+work.
+
+**Why not `omarchy transcode ascii`?** Omarchy ships an image-to-ASCII
+transcoder, but it is a 1-bit hard threshold built for logos: a photograph
+through it comes out a near-solid block. This plugin does its own luminance-ramp
+pass instead, which keeps the tonal range a picture needs.
 
 The bundled CLI edits the same entry:
 
