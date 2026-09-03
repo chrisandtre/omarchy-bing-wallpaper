@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Lint and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq
+
+      - name: Bash syntax
+        run: bash -n bin/bing-wallpaper
+
+      - name: ShellCheck
+        run: shellcheck -S warning bin/bing-wallpaper
+
+      - name: Executable bit
+        run: test -x bin/bing-wallpaper
+
+      # Mirrors the checks omarchy-plugin-validate performs, so a broken
+      # manifest never reaches a user's `omarchy plugin add`.
+      - name: Manifest
+        run: |
+          set -euo pipefail
+          jq -e '.schemaVersion == 1' manifest.json
+          for f in id name version kinds entryPoints; do jq -e --arg f "$f" 'has($f)' manifest.json; done
+          id=$(jq -r .id manifest.json)
+          [[ $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id != omarchy.* ]]
+          jq -e '(.kinds | type) == "array" and (.kinds | length) > 0' manifest.json
+          for kind in $(jq -r '.kinds[]' manifest.json); do
+            case "$kind" in
+              bar-widget) key=barWidget ;;
+              *) key=$kind ;;
+            esac
+            entry=$(jq -r --arg k "$key" '.entryPoints[$k] // empty' manifest.json)
+            [[ -n $entry ]] || { echo "no entry point for kind $kind"; exit 1; }
+            [[ $entry != /* && $entry != *..* ]]
+            test -f "$entry" && test ! -L "$entry"
+          done
+          echo "manifest ok: $id $(jq -r .version manifest.json)"
+
+      - name: Version matches changelog
+        run: |
+          v=$(jq -r .version manifest.json)
+          grep -q "^## \[$v\]" CHANGELOG.md

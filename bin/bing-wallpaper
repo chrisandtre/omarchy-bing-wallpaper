@@ -1,0 +1,500 @@
+#!/bin/bash
+#
+# bing-wallpaper - fetch the Bing image of the day, make it the Omarchy
+# wallpaper, and (optionally) build a matching "Bing" theme with Aether.
+#
+# Usage:
+#   bing-wallpaper fetch [--force] [--market MKT] [--mode dark|light|auto]
+#   bing-wallpaper status            Print the current state as JSON
+#   bing-wallpaper settings          Print the effective settings as JSON
+#   bing-wallpaper set <key> <val>   Update one setting inline in shell.json
+#   bing-wallpaper open              Open today's story in the browser
+#   bing-wallpaper next              Print when the next Bing image is expected
+#
+# Settings are read from the plugin's inline entry in ~/.config/omarchy/shell.json
+# (see README). Every setting can also be overridden with an environment variable
+# of the form BING_WALLPAPER_<KEY>, e.g. BING_WALLPAPER_MARKET=de-DE.
+
+set -o pipefail
+
+PLUGIN_ID="io.github.chrisandtre.bing-wallpaper"
+THEME_NAME="bing"
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+SHELL_JSON="$CONFIG_HOME/omarchy/shell.json"
+THEME_DIR="$CONFIG_HOME/omarchy/themes/$THEME_NAME"
+BACKGROUNDS_DIR="$THEME_DIR/backgrounds"
+STATE_DIR="$STATE_HOME/bing-wallpaper"
+STATE_FILE="$STATE_DIR/state.json"
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bing-wallpaper.lock"
+
+BING_HOST="https://www.bing.com"
+
+# Setting name -> default. Keep in sync with README.md and Model.js.
+declare -A DEFAULTS=(
+  [market]="en-US"
+  [mode]="dark"
+  [extractMode]="normal"
+  [applyTheme]="true"
+  [retentionDays]="7"
+  [notify]="true"
+  [lightStart]="7"
+  [lightEnd]="19"
+  [resolution]="UHD"
+)
+
+log() { printf '%s\n' "$*" >&2; }
+fail() { log "bing-wallpaper: $*"; exit 1; }
+
+need() {
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || fail "$tool is required but not installed"
+  done
+}
+
+# ------------------------------------------------------------------ settings
+
+# Find our inline entry anywhere shell.json can hold it: the bar layout
+# sections for a bar widget, or plugins[] for a headless install.
+setting_entry() {
+  [[ -f $SHELL_JSON ]] || { echo '{}'; return; }
+  jq -c --arg id "$PLUGIN_ID" '
+    [
+      (.bar.layout // {} | .left // [], .center // [], .right // [] | .[]),
+      (.plugins // [] | .[])
+    ]
+    | map(select(type == "object" and .id == $id))
+    | .[0] // {}
+  ' "$SHELL_JSON" 2>/dev/null || echo '{}'
+}
+
+load_settings() {
+  local entry key env_key value
+  entry=$(setting_entry)
+  declare -gA SETTINGS=()
+  for key in "${!DEFAULTS[@]}"; do
+    value=$(jq -r --arg k "$key" '.[$k] // empty' <<<"$entry")
+    env_key="BING_WALLPAPER_$(tr '[:lower:]' '[:upper:]' <<<"$key")"
+    if [[ -n ${!env_key:-} ]]; then
+      value="${!env_key}"
+    fi
+    SETTINGS[$key]="${value:-${DEFAULTS[$key]}}"
+  done
+}
+
+print_settings() {
+  local key first=1
+  printf '{'
+  for key in $(printf '%s\n' "${!SETTINGS[@]}" | sort); do
+    (( first )) || printf ','
+    first=0
+    printf '"%s":%s' "$key" "$(jq -Rn --arg v "${SETTINGS[$key]}" '$v')"
+  done
+  printf '}\n'
+}
+
+valid_setting_value() {
+  local key="$1" value="$2"
+  case "$key" in
+    market)        [[ $value =~ ^[a-z]{2}-[A-Z]{2}$ ]] ;;
+    mode)          [[ $value =~ ^(dark|light|auto)$ ]] ;;
+    extractMode)   [[ $value =~ ^[a-z-]+$ ]] ;;
+    applyTheme)    [[ $value =~ ^(true|false)$ ]] ;;
+    notify)        [[ $value =~ ^(true|false)$ ]] ;;
+    retentionDays) [[ $value =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 365 )) ;;
+    lightStart)    [[ $value =~ ^[0-9]+$ ]] && (( value >= 0 && value <= 23 )) ;;
+    lightEnd)      [[ $value =~ ^[0-9]+$ ]] && (( value >= 0 && value <= 24 )) ;;
+    resolution)    [[ $value =~ ^(UHD|1920x1200|1920x1080)$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Write one setting onto our inline entry. The shell hot-reloads shell.json,
+# so the widget picks the change up immediately.
+set_setting() {
+  local key="$1" value="$2" tmp jq_value
+  [[ -n ${DEFAULTS[$key]+_} ]] || fail "unknown setting '$key' (known: ${!DEFAULTS[*]})"
+  valid_setting_value "$key" "$value" || fail "invalid value '$value' for $key"
+  [[ -f $SHELL_JSON ]] || fail "$SHELL_JSON does not exist; enable the plugin first"
+
+  case "$value" in
+    true | false) jq_value="$value" ;;
+    *) if [[ $value =~ ^[0-9]+$ ]]; then jq_value="$value"; else jq_value=$(jq -Rn --arg v "$value" '$v'); fi ;;
+  esac
+
+  tmp=$(mktemp "$SHELL_JSON.XXXXXX")
+  if jq --arg id "$PLUGIN_ID" --arg key "$key" --argjson value "$jq_value" '
+    def patch: if type == "array" then map(if type == "object" and .id == $id then .[$key] = $value else . end) else . end;
+    .bar.layout.left |= patch
+    | .bar.layout.center |= patch
+    | .bar.layout.right |= patch
+    | .plugins |= patch
+  ' "$SHELL_JSON" >"$tmp"; then
+    mv "$tmp" "$SHELL_JSON"
+  else
+    rm -f "$tmp"
+    fail "could not update $SHELL_JSON"
+  fi
+}
+
+# ------------------------------------------------------------------- state
+
+read_state() {
+  [[ -f $STATE_FILE ]] && jq -c . "$STATE_FILE" 2>/dev/null || echo '{}'
+}
+
+state_get() {
+  read_state | jq -r --arg k "$1" '.[$k] // empty'
+}
+
+# write_state key=value ... (values are JSON-encoded as strings unless they
+# look like numbers/booleans/null).
+write_state() {
+  local args=() pair key value
+  mkdir -p "$STATE_DIR"
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    if [[ $value =~ ^(-?[0-9]+|true|false|null)$ ]]; then
+      args+=(--argjson "$key" "$value")
+    else
+      args+=(--arg "$key" "$value")
+    fi
+  done
+  local filter='.'
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    filter+=" | .[\"$key\"] = \$$key"
+  done
+  local tmp
+  tmp=$(mktemp "$STATE_DIR/state.XXXXXX")
+  read_state | jq "${args[@]}" "$filter" >"$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+now_epoch() { date +%s; }
+now_iso() { date -Iseconds; }
+
+# ------------------------------------------------------------------- modes
+
+# Resolve "auto" into the mode that applies right now.
+effective_mode() {
+  local mode="${SETTINGS[mode]}" hour
+  if [[ $mode == auto ]]; then
+    hour=$(date +%-H)
+    if (( hour >= SETTINGS[lightStart] && hour < SETTINGS[lightEnd] )); then
+      echo light
+    else
+      echo dark
+    fi
+  else
+    echo "$mode"
+  fi
+}
+
+# Epoch of the next boundary where an "auto" mode flips, or empty.
+next_mode_flip() {
+  [[ ${SETTINGS[mode]} == auto ]] || return 0
+  local today hour
+  today=$(date +%F)
+  hour=$(date +%-H)
+  # Build the epoch first and add a day arithmetically: GNU date reads a
+  # trailing "+ 1 day" in a datetime string as a "+1" timezone offset.
+  if (( hour < SETTINGS[lightStart] )); then
+    date -d "$today ${SETTINGS[lightStart]}:00" +%s
+  elif (( hour < SETTINGS[lightEnd] )); then
+    date -d "$today ${SETTINGS[lightEnd]}:00" +%s
+  else
+    echo $(( $(date -d "$today ${SETTINGS[lightStart]}:00" +%s) + 86400 ))
+  fi
+}
+
+# ------------------------------------------------------------------- bing
+
+fetch_metadata() {
+  local market="$1"
+  curl -fsSL --max-time 20 \
+    "$BING_HOST/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=$market" |
+    jq -c '.images[0]'
+}
+
+# The Bing archive gives fullstartdate as UTC "YYYYMMDDHHMM"; the next image
+# lands 24h later. Returns epoch seconds.
+next_image_epoch() {
+  local fullstart="$1" y m d hh mm
+  [[ $fullstart =~ ^([0-9]{4})([0-9]{2})([0-9]{2})([0-9]{2})([0-9]{2})$ ]] || return 1
+  y=${BASH_REMATCH[1]}; m=${BASH_REMATCH[2]}; d=${BASH_REMATCH[3]}
+  hh=${BASH_REMATCH[4]}; mm=${BASH_REMATCH[5]}
+  local start
+  start=$(date -u -d "$y-$m-${d}T$hh:$mm:00Z" +%s) || return 1
+  echo $(( start + 86400 ))
+}
+
+download_image() {
+  local urlbase="$1" dest="$2" res tmp
+  tmp="$dest.part"
+  for res in "${SETTINGS[resolution]}" 1920x1200 1920x1080; do
+    if curl -fsSL --max-time 120 -o "$tmp" "$BING_HOST${urlbase}_${res}.jpg" &&
+       [[ -s $tmp ]] && file -b --mime-type "$tmp" | grep -q '^image/'; then
+      mv "$tmp" "$dest"
+      echo "$res"
+      return 0
+    fi
+    rm -f "$tmp"
+  done
+  return 1
+}
+
+prune_backgrounds() {
+  local keep_days="${SETTINGS[retentionDays]}" cutoff file stamp
+  cutoff=$(date -d "-$keep_days days" +%s)
+  for file in "$BACKGROUNDS_DIR"/????-??-??-*; do
+    [[ -f $file ]] || continue
+    stamp=$(basename "$file" | cut -c1-10)
+    if [[ $stamp =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && (( $(date -d "$stamp" +%s 2>/dev/null || echo 0) < cutoff )); then
+      rm -f -- "$file"
+    fi
+  done
+}
+
+# ------------------------------------------------------------------- theme
+
+# Aether writes a colors.toml whose shade names differ slightly from the ones
+# Omarchy's templates read (lighter_bg vs lighter_background, ...). Emit a
+# colors.toml carrying both spellings so every template resolves.
+normalize_colors() {
+  local src="$1" dest="$2" line key value
+  declare -A colors=()
+  local -a order=()
+  while IFS= read -r line; do
+    [[ $line =~ ^[[:space:]]*([a-zA-Z0-9_]+)[[:space:]]*=[[:space:]]*\"([^\"]*)\" ]] || continue
+    key=${BASH_REMATCH[1]}
+    value=${BASH_REMATCH[2]}
+    colors[$key]="$value"
+    order+=("$key")
+  done <"$src"
+
+  alias_color() {
+    local target="$1" source="$2"
+    if [[ -z ${colors[$target]+_} && -n ${colors[$source]+_} ]]; then
+      colors[$target]="${colors[$source]}"
+      order+=("$target")
+    fi
+  }
+  alias_color lighter_background lighter_bg
+  alias_color dark_background dark_bg
+  alias_color darker_background darker_bg
+  alias_color light_foreground light_fg
+  alias_color bright_foreground bright_fg
+  alias_color dark_foreground dark_fg
+  alias_color lighter_bg lighter_background
+  alias_color dark_bg dark_background
+  alias_color darker_bg darker_background
+  alias_color light_fg light_foreground
+  alias_color bright_fg bright_foreground
+  alias_color dark_fg dark_foreground
+  alias_color selection_background selection
+  alias_color selection_foreground background
+  alias_color orange yellow
+  alias_color brown red
+
+  {
+    echo "# Bing image of the day - palette extracted by Aether."
+    echo "# Generated by bing-wallpaper on $(now_iso); edits are overwritten daily."
+    echo
+    for key in "${order[@]}"; do
+      printf '%s = "%s"\n' "$key" "${colors[$key]}"
+    done
+  } >"$dest"
+}
+
+build_theme() {
+  local image="$1" mode="$2" extract_mode="$3" work
+  command -v aether >/dev/null 2>&1 || return 2
+  work=$(mktemp -d)
+  local -a args=(--generate "$image" --no-apply --output "$work" --extract-mode "$extract_mode" --no-zed --no-vscode --no-neovim)
+  [[ $mode == light ]] && args+=(--light-mode)
+  if ! aether "${args[@]}" >"$work/aether.log" 2>&1 || [[ ! -f $work/colors.toml ]]; then
+    log "aether failed:"; cat "$work/aether.log" >&2
+    rm -rf "$work"
+    return 1
+  fi
+  mkdir -p "$THEME_DIR"
+  normalize_colors "$work/colors.toml" "$THEME_DIR/colors.toml"
+  if [[ -f $work/icons.theme ]]; then
+    tr -d '\n' <"$work/icons.theme" >"$THEME_DIR/icons.theme"
+  fi
+  rm -rf "$work"
+}
+
+apply_theme_and_background() {
+  local image="$1"
+  # Skip the theme's own background pick (it cycles to "the next one"), then
+  # set today's image explicitly.
+  OMARCHY_THEME_SKIP_BACKGROUND=1 omarchy-theme-set "$THEME_NAME" >/dev/null 2>&1 || return 1
+  omarchy-theme-bg-set "$image" >/dev/null 2>&1
+}
+
+notify() {
+  [[ ${SETTINGS[notify]} == true ]] || return 0
+  command -v omarchy-notification-send >/dev/null 2>&1 || return 0
+  omarchy-notification-send "$@" >/dev/null 2>&1 || true
+}
+
+# ------------------------------------------------------------------- fetch
+
+cmd_fetch() {
+  local force=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --force | -f) force=1 ;;
+      --market) SETTINGS[market]="$2"; shift ;;
+      --mode) SETTINGS[mode]="$2"; shift ;;
+      -h | --help) sed -n '2,20p' "$0"; return 0 ;;
+      *) fail "unknown fetch option: $1" ;;
+    esac
+    shift
+  done
+
+  need curl jq file
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || { log "another fetch is running"; return 0; }
+
+  local market="${SETTINGS[market]}" mode now next_check next_flip
+  mode=$(effective_mode)
+  now=$(now_epoch)
+
+  # Cheap path: nothing can have changed yet, and the palette mode is the
+  # same. The service ticks often so this has to be nearly free.
+  next_check=$(state_get nextCheck)
+  if (( ! force )) &&
+     [[ $(state_get market) == "$market" ]] &&
+     [[ $(state_get mode) == "$mode" ]] &&
+     [[ $(state_get extractMode) == "${SETTINGS[extractMode]}" ]] &&
+     [[ $(state_get applyTheme) == "${SETTINGS[applyTheme]}" ]] &&
+     [[ -n $next_check && $now -lt $next_check ]] &&
+     [[ -f $(state_get image) ]]; then
+    return 0
+  fi
+
+  write_state status=fetching updatedAt="$(now_iso)"
+
+  local meta
+  if ! meta=$(fetch_metadata "$market") || [[ -z $meta || $meta == null ]]; then
+    write_state status=error error="Could not reach Bing for market $market" nextCheck=$(( now + 600 ))
+    log "could not fetch Bing metadata for $market"
+    return 1
+  fi
+
+  local startdate fullstart urlbase title copyright link name image_id
+  startdate=$(jq -r '.startdate' <<<"$meta")
+  fullstart=$(jq -r '.fullstartdate' <<<"$meta")
+  urlbase=$(jq -r '.urlbase' <<<"$meta")
+  title=$(jq -r '.title // ""' <<<"$meta")
+  copyright=$(jq -r '.copyright // ""' <<<"$meta")
+  link=$(jq -r '.copyrightlink // ""' <<<"$meta")
+  # "/th?id=OHR.AZWilderness_EN-US4070936347" -> "AZWilderness"
+  name=$(sed -E 's/.*id=OHR\.([A-Za-z0-9]+)_.*/\1/' <<<"$urlbase")
+  [[ -n $name && $name != "$urlbase" ]] || name="bing"
+  image_id="${startdate}-${market}-${name}"
+
+  local date_fmt image
+  date_fmt="${startdate:0:4}-${startdate:4:2}-${startdate:6:2}"
+  mkdir -p "$BACKGROUNDS_DIR"
+  image="$BACKGROUNDS_DIR/$date_fmt-$name-$market.jpg"
+
+  local resolution="cached"
+  if [[ ! -s $image ]]; then
+    if ! resolution=$(download_image "$urlbase" "$image"); then
+      write_state status=error error="Image download failed" nextCheck=$(( now + 600 ))
+      log "could not download $urlbase"
+      return 1
+    fi
+  fi
+
+  local next_image
+  next_image=$(next_image_epoch "$fullstart") || next_image=$(( now + 3600 ))
+  # Poll a little after the scheduled changeover; Bing is not always punctual.
+  next_check=$(( next_image + 300 ))
+  (( next_check > now )) || next_check=$(( now + 1800 ))
+  next_flip=$(next_mode_flip)
+  if [[ -n $next_flip ]] && (( next_flip < next_check )); then
+    next_check=$next_flip
+  fi
+
+  local changed=0 theme_status="skipped"
+  if [[ $(state_get imageId) != "$image_id" || $(state_get mode) != "$mode" ||
+        $(state_get extractMode) != "${SETTINGS[extractMode]}" ||
+        $(state_get applyTheme) != "${SETTINGS[applyTheme]}" || $force == 1 ]]; then
+    changed=1
+  fi
+
+  if (( changed )); then
+    if [[ ${SETTINGS[applyTheme]} == true ]]; then
+      case "$(build_theme "$image" "$mode" "${SETTINGS[extractMode]}"; echo $?)" in
+        0) theme_status="applied" ;;
+        2) theme_status="aether-missing"; log "aether is not installed; setting wallpaper only" ;;
+        *) theme_status="failed" ;;
+      esac
+    fi
+
+    if [[ $theme_status == applied ]]; then
+      apply_theme_and_background "$image" || theme_status="apply-failed"
+    else
+      omarchy-theme-bg-set "$image" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  prune_backgrounds
+
+  write_state \
+    status=ok error="" \
+    imageId="$image_id" image="$image" date="$date_fmt" market="$market" \
+    title="$title" copyright="$copyright" link="$link" \
+    mode="$mode" modeSetting="${SETTINGS[mode]}" extractMode="${SETTINGS[extractMode]}" \
+    applyTheme="${SETTINGS[applyTheme]}" theme="$theme_status" resolution="$resolution" \
+    nextCheck="$next_check" nextImage="$next_image" updatedAt="$(now_iso)"
+
+  if (( changed )) && [[ $(state_get lastNotifiedId) != "$image_id" ]]; then
+    notify "Bing: $title" -t 4000
+    write_state lastNotifiedId="$image_id"
+  fi
+
+  log "bing-wallpaper: $date_fmt [$market] \"$title\" ($mode, theme: $theme_status)"
+}
+
+cmd_open() {
+  local link
+  link=$(state_get link)
+  [[ -n $link ]] || fail "no story link yet; run fetch first"
+  if command -v omarchy-launch-browser >/dev/null 2>&1; then
+    setsid omarchy-launch-browser "$link" >/dev/null 2>&1 &
+  else
+    setsid xdg-open "$link" >/dev/null 2>&1 &
+  fi
+}
+
+cmd_next() {
+  local next
+  next=$(state_get nextCheck)
+  [[ -n $next ]] || { echo "unknown (never fetched)"; return; }
+  date -d "@$next"
+}
+
+main() {
+  local cmd="${1:-fetch}"
+  shift || true
+  load_settings
+  case "$cmd" in
+    fetch) cmd_fetch "$@" ;;
+    status) read_state | jq . ;;
+    settings) print_settings ;;
+    set) [[ $# -eq 2 ]] || fail "usage: bing-wallpaper set <key> <value>"; set_setting "$1" "$2" ;;
+    open) cmd_open ;;
+    next) cmd_next ;;
+    -h | --help | help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) fail "unknown command '$cmd' (fetch|status|settings|set|open|next)" ;;
+  esac
+}
+
+main "$@"

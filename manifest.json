@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.chrisandtre.bing-wallpaper",
+  "name": "Bing Wallpaper",
+  "version": "0.1.0",
+  "author": "Chris Kitson",
+  "description": "Bing image of the day as your wallpaper, with a matching Aether-generated 'Bing' theme.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Bing Wallpaper",
+    "description": "Today's Bing image title, with a detail panel and settings",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center"
+  }
+}
