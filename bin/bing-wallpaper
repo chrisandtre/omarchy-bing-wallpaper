@@ -4,7 +4,8 @@
 # wallpaper, and (optionally) build a matching "Bing" theme with Aether.
 #
 # Usage:
-#   bing-wallpaper fetch [--force] [--market MKT] [--mode dark|light|auto]
+#   bing-wallpaper fetch [--force] [--day N] [--market MKT] [--mode dark|light|auto]
+#                                    --day N picks the image from N days ago (0-7)
 #   bing-wallpaper status            Print the current state as JSON
 #   bing-wallpaper settings          Print the effective settings as JSON
 #   bing-wallpaper set <key> <val>   Update one setting inline in shell.json
@@ -212,9 +213,9 @@ next_mode_flip() {
 # ------------------------------------------------------------------- bing
 
 fetch_metadata() {
-  local market="$1"
+  local market="$1" day="${2:-0}"
   curl -fsSL --max-time 20 \
-    "$BING_HOST/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=$market" |
+    "$BING_HOST/HPImageArchive.aspx?format=js&idx=$day&n=1&mkt=$market" |
     jq -c '.images[0]'
 }
 
@@ -344,10 +345,16 @@ notify() {
 # ------------------------------------------------------------------- fetch
 
 cmd_fetch() {
-  local force=0
+  local force=0 day=0
   while (( $# > 0 )); do
     case "$1" in
       --force | -f) force=1 ;;
+      --day)
+        day="$2"; shift
+        [[ $day =~ ^[0-7]$ ]] || fail "--day takes a number from 0 (today) to 7"
+        # An explicit day is always a change the user wants applied now.
+        force=1
+        ;;
       --market) SETTINGS[market]="$2"; shift ;;
       --mode) SETTINGS[mode]="$2"; shift ;;
       -h | --help) sed -n '2,20p' "$0"; return 0 ;;
@@ -380,7 +387,7 @@ cmd_fetch() {
   write_state status=fetching updatedAt="$(now_iso)"
 
   local meta
-  if ! meta=$(fetch_metadata "$market") || [[ -z $meta || $meta == null ]]; then
+  if ! meta=$(fetch_metadata "$market" "$day") || [[ -z $meta || $meta == null ]]; then
     write_state status=error error="Could not reach Bing for market $market" nextCheck=$(( now + 600 ))
     log "could not fetch Bing metadata for $market"
     return 1
@@ -412,8 +419,12 @@ cmd_fetch() {
     fi
   fi
 
+  # Bing publishes one image a day at the same UTC time, so the changeover
+  # after an older picture is that picture's own changeover plus its age. An
+  # explicit --day therefore holds until tomorrow's image, then yields to it.
   local next_image
   next_image=$(next_image_epoch "$fullstart") || next_image=$(( now + 3600 ))
+  next_image=$(( next_image + day * 86400 ))
   # Poll a little after the scheduled changeover; Bing is not always punctual.
   next_check=$(( next_image + 300 ))
   (( next_check > now )) || next_check=$(( now + 1800 ))
@@ -449,7 +460,7 @@ cmd_fetch() {
 
   write_state \
     status=ok error="" \
-    imageId="$image_id" image="$image" date="$date_fmt" market="$market" \
+    imageId="$image_id" image="$image" date="$date_fmt" market="$market" day="$day" \
     title="$title" copyright="$copyright" link="$link" \
     mode="$mode" modeSetting="${SETTINGS[mode]}" extractMode="${SETTINGS[extractMode]}" \
     applyTheme="${SETTINGS[applyTheme]}" theme="$theme_status" resolution="$resolution" \

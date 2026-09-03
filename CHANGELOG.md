@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-03
+
+### Added
+
+- `bing-wallpaper fetch --day N` applies the picture (and theme) from up to
+  seven days ago. The choice holds until tomorrow's image arrives.
+- Showcase screenshots in the README
+
+### Changed
+
+- Renamed to "Bing Wallpaper & Theme" and explained how this differs from the
+  other Bing wallpaper plugins in the marketplace
+
 ## [0.1.0] - 2026-09-03
 
 ### Added

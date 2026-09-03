@@ -18,6 +18,18 @@ to Omarchy and goes one better: every day the whole desktop is re-themed to
 match the picture. A bar widget shows the title; click it for the story behind
 the image, the photographer's credit, and the plugin's settings.
 
+## Showcase
+
+Every picture gets its own palette. Same desktop, same btop and neovim, four
+different mornings:
+
+| | |
+|---|---|
+| ![Beach huts in Southwold, England](docs/showcase-southwold.jpg) | ![Registan Square, Samarkand](docs/showcase-samarkand.jpg) |
+| *Painted along the shore* | *A master class in pattern* |
+| ![Whale shark, West Papua](docs/showcase-whale-shark.jpg) | ![Flamingos at Lake Magadi, Kenya](docs/showcase-flamingos.jpg) |
+| *The fish that outgrew its name* | *Water, wildlife, and wonder* |
+
 ## Features
 
 - **New picture every morning** in the Bing region you choose (14 markets, US default)
@@ -72,6 +84,7 @@ disable or remove it from `Omarchy Menu > Setup > Plugins`.
 | Read today's story on Bing | Right-click the pill, or **Open story** |
 | Open this week's images | **Wallpapers** in the panel |
 | Cycle through the week's images | `omarchy theme bg next` |
+| Go back to an earlier day's picture and theme | `bing-wallpaper fetch --day 2` (0 = today, up to 7) |
 | From a script or keybinding | `omarchy-shell io.github.chrisandtre.bing-wallpaper refresh` |
 
 ## Settings
@@ -143,7 +156,9 @@ For people who like to know before they install:
 ## CLI
 
 ```
-bing-wallpaper fetch [--force] [--market MKT] [--mode dark|light|auto]
+bing-wallpaper fetch [--force] [--day N] [--market MKT] [--mode dark|light|auto]
+                             # --day N applies the picture from N days ago (0-7);
+                             # it holds until tomorrow's image arrives
 bing-wallpaper status        # contents of state.json
 bing-wallpaper settings      # effective settings
 bing-wallpaper set KEY VALUE # update a setting in shell.json
@@ -164,8 +179,10 @@ rm -rf ~/.config/omarchy/themes/bing ~/.local/state/bing-wallpaper
 
 ## Development
 
+Clone this repository somewhere you like to work, then link it into the plugin
+directory instead of installing a copy:
+
 ```bash
-git clone https://github.com/chrisandtre/omarchy-bing-wallpaper.git ~/Work/omarchy-bing-wallpaper
 ln -s ~/Work/omarchy-bing-wallpaper ~/.config/omarchy/plugins/io.github.chrisandtre.bing-wallpaper
 omarchy-shell shell rescanPlugins
 omarchy plugin enable io.github.chrisandtre.bing-wallpaper

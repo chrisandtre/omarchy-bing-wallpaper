@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.chrisandtre.bing-wallpaper",
   "name": "Bing Wallpaper & Theme",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Chris Kitson",
   "description": "Bing image of the day as your wallpaper, plus a matching 'Bing' theme generated from its colors with Aether every morning.",
   "kinds": [
