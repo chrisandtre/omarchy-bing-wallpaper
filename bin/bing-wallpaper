@@ -47,7 +47,7 @@ declare -A DEFAULTS=(
   [lightStart]="7"
   [lightEnd]="19"
   [resolution]="UHD"
-  [screensaver]="false"
+  [screensaver]="true"
   [screensaverSize]="120x29"
 )
 

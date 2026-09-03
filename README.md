@@ -40,8 +40,9 @@ different mornings:
 - **Robust scheduling**: knows when Bing's next image is due, survives suspend and
   offline stretches, never hammers the API
 - **Wallpaper-only mode** if you would rather keep your own theme
-- **Matching screensaver**, off by default: today's picture drawn as ASCII art
-  in place of the Omarchy logo, dissolved by the same `ttfx` effects
+- **Matching screensaver**: today's picture drawn as ASCII art in place of the
+  Omarchy logo, dissolved by the same `ttfx` effects. On by default; one toggle
+  puts your old art back
 - **No sudo or pkexec is required** for anything the plugin does on its own.
   Everything happens in your home directory. (The one exception is installing
   ImageMagick for the screensaver, which is an ordinary package install you
@@ -111,7 +112,7 @@ options, so nothing else on your system is modified.
 | `retentionDays` | `7` | How many days of images to keep |
 | `notify` | `true` | Desktop notification when a new picture lands |
 | `resolution` | `UHD` | Preferred download size; falls back to `1920x1200`, then `1920x1080` |
-| `screensaver` | `false` | Draw today's picture as the Omarchy screensaver art |
+| `screensaver` | `true` | Draw today's picture as the Omarchy screensaver art |
 | `screensaverSize` | `120x29` | Art size in terminal cells: `80x20`, `120x29`, `160x39`, `200x48` |
 | `showTitle` | `true` | Show the title next to the icon in the bar |
 | `maxTitleChars` | `28` | Truncate long titles in the bar |
@@ -124,9 +125,15 @@ Example entry in `shell.json`:
 
 ## Screensaver
 
-Off by default. Turn **Use as screensaver** on in the panel and today's picture
-is drawn as ASCII art in place of the Omarchy logo, dissolved by the same random
-`ttfx` effects as always — the vibe is unchanged, the picture is not.
+Today's picture is drawn as ASCII art in place of the Omarchy logo, dissolved by
+the same random `ttfx` effects as always — the vibe is unchanged, the picture is
+not. This is **on by default**; **Use as screensaver** in the panel turns it off
+and puts your old art back.
+
+<img src="docs/screensaver.png" alt="Four screensavers: a canyon, a whale shark, a forest floor and a shoreline, each drawn as ASCII art and coloured by a different ttfx effect" width="920">
+
+<sub>Four mornings, four pictures, four of the random effects `ttfx` picks from.
+These are real screenshots of the running screensaver, not mockups.</sub>
 
 Omarchy's screensaver is a single plain-text file. `omarchy-screensaver` loops
 

@@ -31,7 +31,7 @@ Panel {
   readonly property string mode: String(setting("mode", "dark"))
   readonly property string extractMode: String(setting("extractMode", "normal"))
   readonly property bool applyTheme: setting("applyTheme", true) !== false && setting("applyTheme", true) !== "false"
-  readonly property bool screensaver: setting("screensaver", false) === true || setting("screensaver", false) === "true"
+  readonly property bool screensaver: setting("screensaver", true) !== false && setting("screensaver", true) !== "false"
   readonly property string screensaverSize: String(setting("screensaverSize", "120x29"))
 
   function open() {

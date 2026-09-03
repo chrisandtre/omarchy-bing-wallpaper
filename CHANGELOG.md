@@ -8,17 +8,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- **Screensaver support**, off by default. With `screensaver` on, today's
-  picture is rendered as ASCII art into
-  `~/.config/omarchy/branding/screensaver.txt`, so the Omarchy screensaver
-  dissolves the day's photograph instead of the logo. `screensaverSize` picks
-  the art size; the toggle takes effect immediately rather than waiting for the
-  next scheduled fetch.
-- The previous screensaver art is backed up on first use and restored exactly
-  when the setting is turned off. Art the user has edited themselves is never
-  overwritten.
+- **Screensaver support, on by default.** Today's picture is rendered as ASCII
+  art into `~/.config/omarchy/branding/screensaver.txt`, so the Omarchy
+  screensaver dissolves the day's photograph instead of the logo, using the
+  same random `ttfx` effects as before. `screensaverSize` picks the art size,
+  and the toggle takes effect immediately rather than waiting for the next
+  scheduled fetch.
+- Because this is on by default, the plugin replaces the screensaver art on its
+  first run. Whatever was there is copied to
+  `~/.local/state/bing-wallpaper/screensaver.txt.orig` first and restored
+  exactly when the setting is turned off, and art you have edited yourself is
+  never overwritten.
 - `bing-wallpaper install-deps` installs ImageMagick, which the screensaver
   needs and a stock Omarchy box does not necessarily have.
+- Screensaver screenshots in the README
 
 ## [0.2.0] - 2026-09-03
 
