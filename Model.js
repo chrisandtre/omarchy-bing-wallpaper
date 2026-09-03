@@ -91,6 +91,20 @@ function prettyDate(iso) {
   return Qt.formatDate(d, "dddd, MMMM d")
 }
 
+// "Today", "Yesterday", then the weekday, for the archive cards.
+function dayLabel(iso) {
+  if (!iso) return ""
+  var parts = String(iso).split("-")
+  if (parts.length !== 3) return String(iso)
+  var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+  var now = new Date()
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  var diff = Math.round((today.getTime() - d.getTime()) / 86400000)
+  if (diff === 0) return "Today"
+  if (diff === 1) return "Yesterday"
+  return Qt.formatDate(d, "ddd")
+}
+
 // Copyright strings look like "Place, Country (© Photographer/Agency)".
 function splitCopyright(copyright) {
   var s = String(copyright || "")
@@ -118,6 +132,56 @@ function screensaverLine(state) {
     return "Screensaver needs ImageMagick — run: bing-wallpaper install-deps"
   if (status === "failed") return "Screensaver art could not be rendered"
   if (status === "applied") return "Screensaver shows today's picture"
+  return ""
+}
+
+// The chips drawn under a picture to preview its theme: the background with
+// "Aa" in the foreground colour, then the accent and the six ANSI hues.
+var SWATCH_KEYS = ["background", "accent", "color1", "color2", "color3", "color4", "color5", "color6"]
+
+function swatches(colors) {
+  if (!colors || typeof colors !== "object") return []
+  var out = []
+  for (var i = 0; i < SWATCH_KEYS.length; i++) {
+    var value = colors[SWATCH_KEYS[i]]
+    if (typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value))
+      out.push({ key: SWATCH_KEYS[i], color: value })
+  }
+  return out
+}
+
+function archiveEntries(archive) {
+  return archive && Array.isArray(archive.entries) ? archive.entries : []
+}
+
+function findEntry(archive, id) {
+  var entries = archiveEntries(archive)
+  for (var i = 0; i < entries.length; i++) {
+    if (entries[i] && entries[i].id === id) return entries[i]
+  }
+  return null
+}
+
+// The entry describing what is on screen now, built from state.json so the
+// hero still works before the archive has been written.
+function currentEntry(state) {
+  if (!state || !state.imageId) return null
+  return {
+    id: state.imageId, date: state.date || "", title: state.title || "",
+    copyright: state.copyright || "", link: state.link || "", image: state.image || "",
+    market: state.market || "", colors: null
+  }
+}
+
+// Third status line: the archive while it is still coming down.
+function archiveLine(state, archive) {
+  if (!state) return ""
+  var status = String(state.archive || "")
+  if (status === "downloading") {
+    var progress = state.archiveProgress ? " (" + state.archiveProgress + ")" : ""
+    return "Downloading this week's pictures" + progress + "…"
+  }
+  if (status === "partial") return "Some of this week's pictures could not be downloaded"
   return ""
 }
 

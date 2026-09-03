@@ -14,6 +14,10 @@ BarWidget {
 
   // Parsed ~/.local/state/bing-wallpaper/state.json, written by bin/bing-wallpaper.
   property var state: ({})
+  // Parsed archive.json: this week's pictures with the palette each would give.
+  property var archive: ({})
+
+  readonly property string script: String(Qt.resolvedUrl("bin/bing-wallpaper")).replace(/^file:\/\//, "")
 
   readonly property bool showTitle: setting("showTitle", true)
   readonly property int maxTitleChars: Number(setting("maxTitleChars", 28))
@@ -37,12 +41,24 @@ BarWidget {
   function refresh() {
     var s = service()
     if (s && typeof s.fetch === "function") s.fetch(true)
-    else if (bar) bar.run("bash " + bar.shellQuote(String(Qt.resolvedUrl("bin/bing-wallpaper")).replace(/^file:\/\//, "")) + " fetch --force")
+    else Util.execArgv(["bash", root.script, "fetch", "--force"])
+  }
+
+  // Switch to an archived picture (a date, an archive id, or N days ago).
+  function applyArchive(when) {
+    if (when === undefined || when === null || String(when) === "") return
+    var s = service()
+    if (s && typeof s.apply === "function") s.apply(String(when))
+    else Util.execArgv(["bash", root.script, "apply", String(when)])
+  }
+
+  function openLink(link) {
+    if (!link) return
+    Util.execArgv(["omarchy-launch-browser", String(link)])
   }
 
   function openStory() {
-    if (!state || !state.link) return
-    if (bar) bar.run("omarchy-launch-browser " + bar.shellQuote(String(state.link)))
+    if (state && state.link) openLink(state.link)
   }
 
   // Persist one setting onto this widget's inline shell.json entry, the way
@@ -76,6 +92,16 @@ BarWidget {
     onFileChanged: reload()
     onLoaded: root.state = Model.parseState(text())
     onLoadFailed: root.state = ({})
+  }
+
+  FileView {
+    id: archiveFile
+    path: root.stateHome + "/bing-wallpaper/archive.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.archive = Model.parseState(text())
+    onLoadFailed: root.archive = ({})
   }
 
   // ---- Detail panel plumbing (same shape contract as omarchy.weather so

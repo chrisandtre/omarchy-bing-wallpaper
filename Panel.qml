@@ -4,8 +4,10 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Detail popup under the bar pill: a preview of today's picture, its title
-// and credit, quick actions, and the plugin's settings.
+// Detail popup under the bar pill: a preview of the picture, its title and
+// credit, the palette Aether builds from it, this week's other pictures
+// (click one to preview what the theme would become, then apply it), quick
+// actions, and the plugin's settings.
 Panel {
   id: root
   moduleName: Model.PLUGIN_ID
@@ -21,11 +23,26 @@ Panel {
   readonly property var barIdentity: hostWidget || root
 
   readonly property var state: hostWidget && hostWidget.state ? hostWidget.state : ({})
+  readonly property var archive: hostWidget && hostWidget.archive ? hostWidget.archive : ({})
+  readonly property var entries: Model.archiveEntries(archive)
   readonly property bool busy: hostWidget ? hostWidget.busy === true : false
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.4)
+  readonly property color accent: Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property var credit: Model.splitCopyright(state.copyright)
+
+  // What is on screen, and what the user is looking at. Clicking an archive
+  // card previews it in the hero without changing anything; "Use this
+  // picture" commits.
+  readonly property string currentId: state.imageId ? String(state.imageId) : ""
+  property string previewId: ""
+  readonly property var previewEntry: previewId !== "" ? Model.findEntry(archive, previewId) : null
+  readonly property var shown: previewEntry || Model.findEntry(archive, currentId) || Model.currentEntry(state) || ({})
+  readonly property bool previewing: previewEntry !== null && previewEntry.id !== currentId
+  readonly property var swatches: Model.swatches(shown.colors)
+  readonly property var credit: Model.splitCopyright(shown.copyright)
+
+  onCurrentIdChanged: previewId = ""
 
   readonly property string market: String(setting("market", "en-US"))
   readonly property string mode: String(setting("mode", "dark"))
@@ -77,12 +94,26 @@ Panel {
     if (hostWidget && typeof hostWidget.refresh === "function") hostWidget.refresh()
   }
 
+  // Opens the story behind whichever picture the hero is showing.
   function openStory() {
-    if (hostWidget && typeof hostWidget.openStory === "function") hostWidget.openStory()
+    if (!shown.link) return
+    if (hostWidget && typeof hostWidget.openLink === "function") hostWidget.openLink(shown.link)
+    else Util.execArgv(["omarchy-launch-browser", String(shown.link)])
+  }
+
+  function applyPreview() {
+    if (!previewing || !previewEntry.date) return
+    if (hostWidget && typeof hostWidget.applyArchive === "function") hostWidget.applyArchive(previewEntry.date)
+  }
+
+  function togglePreview(id) {
+    previewId = (previewId === id || id === currentId) ? "" : id
   }
 
   function openFolder() {
-    if (bar) bar.run("xdg-open " + bar.shellQuote(Quickshell.env("HOME") + "/.config/omarchy/themes/bing/backgrounds"))
+    var config = Quickshell.env("XDG_CONFIG_HOME")
+    if (!config || config === "") config = Quickshell.env("HOME") + "/.config"
+    Util.execArgv(["xdg-open", config + "/omarchy/themes/bing/backgrounds"])
   }
 
   KeyboardPanel {
@@ -94,13 +125,19 @@ Panel {
     centerOnBar: true
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(440))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(820))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(960))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
-      onReturnRequested: root.openStory()
+      onCloseRequested: {
+        if (root.previewing) root.previewId = ""
+        else root.close()
+      }
+      onReturnRequested: {
+        if (root.previewing) root.applyPreview()
+        else root.openStory()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Flickable {
@@ -127,7 +164,7 @@ Panel {
 
             Image {
               anchors.fill: parent
-              source: root.state.image ? "file://" + root.state.image : ""
+              source: root.shown.image ? Util.fileUrl(root.shown.image) : ""
               fillMode: Image.PreserveAspectCrop
               asynchronous: true
               sourceSize.width: 960
@@ -137,15 +174,38 @@ Panel {
 
             Text {
               anchors.centerIn: parent
-              visible: !root.state.image
+              visible: !root.shown.image
               text: Model.ICON
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.displayLarge
             }
 
+            // "Preview" ribbon while looking at a picture that is not applied.
+            Rectangle {
+              anchors.top: parent.top
+              anchors.left: parent.left
+              anchors.margins: Style.space(8)
+              visible: root.previewing
+              radius: Style.space(4)
+              color: Util.alpha("#000000", 0.55)
+              implicitWidth: previewLabel.implicitWidth + Style.space(12)
+              implicitHeight: previewLabel.implicitHeight + Style.space(6)
+
+              Text {
+                id: previewLabel
+                anchors.centerIn: parent
+                text: "PREVIEW"
+                color: "#ffffff"
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1
+              }
+            }
+
             // Hover-to-open affordance.
-            HoverHandler { id: pictureHover; cursorShape: root.state.link ? Qt.PointingHandCursor : Qt.ArrowCursor }
+            HoverHandler { id: pictureHover; cursorShape: root.shown.link ? Qt.PointingHandCursor : Qt.ArrowCursor }
             TapHandler { onTapped: root.openStory() }
 
             Rectangle {
@@ -163,7 +223,7 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: root.state.title || "Bing image of the day"
+              text: root.shown.title || "Bing image of the day"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.heading
@@ -197,8 +257,8 @@ Panel {
               width: parent.width
               textFormat: Text.PlainText
               text: [
-                Model.prettyDate(root.state.date),
-                Model.optionLabel(Model.MARKETS, root.state.market, root.state.market),
+                Model.prettyDate(root.shown.date),
+                Model.optionLabel(Model.MARKETS, root.shown.market || root.state.market, root.shown.market || root.state.market),
                 root.state.mode ? (String(root.state.mode).charAt(0).toUpperCase() + String(root.state.mode).slice(1) + " palette") : ""
               ].filter(function(s) { return s && s !== "" }).join("  ·  ")
               color: root.dim
@@ -209,11 +269,88 @@ Panel {
             }
           }
 
+          // ---- Palette: what the theme looks like for the shown picture
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.swatches.length > 0 || !!root.shown.image
+
+            Row {
+              id: swatchRow
+              width: parent.width
+              spacing: Style.space(4)
+              visible: root.swatches.length > 0
+
+              readonly property real chipWidth: root.swatches.length > 0
+                ? (width - spacing * (root.swatches.length - 1)) / root.swatches.length : 0
+
+              Repeater {
+                model: root.swatches
+
+                Rectangle {
+                  required property var modelData
+                  width: swatchRow.chipWidth
+                  height: Style.space(30)
+                  radius: Style.space(4)
+                  color: modelData.color
+                  border.width: 1
+                  border.color: Util.alpha(root.foreground, 0.18)
+
+                  // The background chip carries "Aa" in the foreground colour
+                  // so text contrast is visible at a glance.
+                  Text {
+                    anchors.centerIn: parent
+                    visible: parent.modelData.key === "background"
+                    text: "Aa"
+                    color: root.shown.colors && root.shown.colors.foreground ? root.shown.colors.foreground : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
+
+                  HoverHandler { id: chipHover }
+                  PanelToolTip {
+                    visible: chipHover.hovered
+                    text: parent.modelData.key + "  " + parent.modelData.color
+                  }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.swatches.length > 0
+                ? (root.previewing ? "Palette this picture would give the Bing theme" : "Palette of the current Bing theme")
+                : (root.state.theme === "aether-missing" ? "Install Aether to preview palettes" : "Palette preview not ready yet")
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
           // ---- Actions
-          Row {
+          Flow {
+            width: parent.width
             spacing: Style.space(8)
 
             Button {
+              visible: root.previewing
+              iconText: "󰄬"
+              text: "Use this picture"
+              enabled: !root.busy
+              foreground: root.foreground
+              accent: root.accent
+              selected: true
+              fontFamily: root.fontFamily
+              bordered: true
+              tooltipText: "Set this picture as the wallpaper and rebuild the theme from it"
+              onClicked: root.applyPreview()
+            }
+
+            Button {
+              visible: !root.previewing
               iconText: "󰑐"
               iconSpinning: root.busy
               text: root.busy ? "Refreshing…" : "Refresh"
@@ -228,11 +365,11 @@ Panel {
             Button {
               iconText: "󰖟"
               text: "Open story"
-              enabled: !!root.state.link
+              enabled: !!root.shown.link
               foreground: root.foreground
               fontFamily: root.fontFamily
               bordered: true
-              tooltipText: "Read about today's picture on Bing"
+              tooltipText: "Read about this picture on Bing"
               onClicked: root.openStory()
             }
 
@@ -244,6 +381,139 @@ Panel {
               bordered: true
               tooltipText: "Open the folder holding this week's images"
               onClicked: root.openFolder()
+            }
+          }
+
+          PanelSeparator { width: parent.width; foreground: root.foreground }
+
+          // ---- This week
+          PanelSectionHeader {
+            text: "THIS WEEK"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.entries.length > 0
+              ? "Click a picture to preview its palette; the highlighted one is on screen now."
+              : (root.busy || root.state.archive === "downloading"
+                ? "Fetching this week's pictures…"
+                : "This week's pictures appear here after the first fetch.")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Grid {
+            id: archiveGrid
+            width: parent.width
+            columns: 4
+            columnSpacing: Style.space(8)
+            rowSpacing: Style.space(8)
+            visible: root.entries.length > 0
+
+            readonly property real cardWidth: (width - columnSpacing * (columns - 1)) / columns
+            readonly property real swatchHeight: Style.space(6)
+            readonly property real cardHeight: Math.round(cardWidth * 9 / 16) + swatchHeight
+
+            Repeater {
+              model: root.entries
+
+              Item {
+                id: card
+                required property var modelData
+                readonly property var entry: modelData || ({})
+                readonly property bool isCurrent: entry.id === root.currentId
+                readonly property bool isPreview: entry.id === root.previewId && !isCurrent
+                readonly property var cardSwatches: Model.swatches(entry.colors)
+                width: archiveGrid.cardWidth
+                height: archiveGrid.cardHeight
+
+                Rectangle {
+                  anchors.fill: parent
+                  radius: Style.space(6)
+                  color: Util.alpha(root.foreground, cardHover.hovered ? 0.12 : 0.06)
+                  border.width: card.isCurrent || card.isPreview ? 2 : 0
+                  border.color: card.isCurrent ? root.accent : root.foreground
+                  clip: true
+                  Behavior on color { ColorAnimation { duration: 120 } }
+
+                  Image {
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.margins: 2
+                    height: parent.height - archiveGrid.swatchHeight - 2
+                    source: card.entry.image ? Util.fileUrl(card.entry.image) : ""
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    sourceSize.width: 240
+                    smooth: true
+                    visible: status === Image.Ready
+                  }
+
+                  Text {
+                    anchors.centerIn: parent
+                    anchors.verticalCenterOffset: -archiveGrid.swatchHeight / 2
+                    visible: !card.entry.image
+                    text: "󰇚"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.icon
+                  }
+
+                  // Day label.
+                  Rectangle {
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.margins: Style.space(4)
+                    radius: Style.space(3)
+                    color: Util.alpha("#000000", 0.55)
+                    implicitWidth: dayText.implicitWidth + Style.space(8)
+                    implicitHeight: dayText.implicitHeight + Style.space(4)
+
+                    Text {
+                      id: dayText
+                      anchors.centerIn: parent
+                      text: Model.dayLabel(card.entry.date)
+                      color: "#ffffff"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  // The picture's palette, as a thin strip along the bottom.
+                  Row {
+                    id: strip
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 2
+                    height: archiveGrid.swatchHeight - 2
+
+                    Repeater {
+                      model: card.cardSwatches
+                      Rectangle {
+                        required property var modelData
+                        width: card.cardSwatches.length > 0 ? strip.width / card.cardSwatches.length : 0
+                        height: strip.height
+                        color: modelData.color
+                      }
+                    }
+                  }
+                }
+
+                HoverHandler { id: cardHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: root.togglePreview(card.entry.id) }
+
+                PanelToolTip {
+                  visible: cardHover.hovered && !!card.entry.title
+                  text: (card.entry.title || "") + (card.isCurrent ? "  ·  on screen now" : "")
+                }
+              }
             }
           }
 
@@ -335,8 +605,19 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: root.busy ? "Fetching today's image…" : Model.statusLine(root.state)
+              text: root.busy && root.state.archive !== "downloading" ? "Fetching today's image…" : Model.statusLine(root.state)
               color: root.state.status === "error" ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              visible: text !== ""
+              textFormat: Text.PlainText
+              text: Model.archiveLine(root.state, root.archive)
+              color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap

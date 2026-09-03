@@ -15,23 +15,35 @@ Item {
   property var manifest: null
 
   readonly property string script: String(Qt.resolvedUrl("bin/bing-wallpaper")).replace(/^file:\/\//, "")
-  readonly property bool busy: fetchProcess.running
+  readonly property bool busy: process.running
 
   property string lastOutput: ""
   property int lastExitCode: 0
-  property bool pendingForce: false
-  property bool pendingFetch: false
 
-  function fetch(force) {
-    if (fetchProcess.running) {
-      pendingFetch = true
-      if (force) pendingForce = true
+  // One script invocation at a time. Anything asked for while it runs is
+  // queued and started when it exits; a forced fetch is never downgraded by a
+  // plain one that arrives after it.
+  property var pending: null
+
+  function run(args) {
+    if (process.running) {
+      var plainFetch = args.length === 1 && args[0] === "fetch"
+      if (!(plainFetch && root.pending !== null)) root.pending = args
       return
     }
-    var args = ["bash", script, "fetch"]
-    if (force) args.push("--force")
-    fetchProcess.command = args
-    fetchProcess.running = true
+    process.command = ["bash", script].concat(args)
+    process.running = true
+  }
+
+  function fetch(force) {
+    run(force ? ["fetch", "--force"] : ["fetch"])
+  }
+
+  // Switch to an archived picture: a date (YYYY-MM-DD), an archive id, or
+  // N days ago. The theme follows, exactly as for the daily change.
+  function apply(when) {
+    if (when === undefined || when === null || String(when) === "") return
+    run(["apply", String(when)])
   }
 
   function openStory() {
@@ -39,7 +51,7 @@ Item {
   }
 
   Process {
-    id: fetchProcess
+    id: process
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.lastOutput = String(text || "").trim()
@@ -48,11 +60,10 @@ Item {
       root.lastExitCode = exitCode
       if (exitCode !== 0 && root.lastOutput !== "")
         console.warn("bing-wallpaper: " + root.lastOutput)
-      if (root.pendingFetch) {
-        var force = root.pendingForce
-        root.pendingFetch = false
-        root.pendingForce = false
-        Qt.callLater(function() { root.fetch(force) })
+      if (root.pending !== null) {
+        var next = root.pending
+        root.pending = null
+        Qt.callLater(function() { root.run(next) })
       }
     }
   }
@@ -73,12 +84,13 @@ Item {
     onTriggered: root.fetch(false)
   }
 
-  // omarchy-shell io.github.chrisandtre.bing-wallpaper fetch | refresh | open
+  // omarchy-shell io.github.chrisandtre.bing-wallpaper fetch | refresh | open | apply <when>
   IpcHandler {
     target: "io.github.chrisandtre.bing-wallpaper"
 
     function fetch(): void { root.fetch(false) }
     function refresh(): void { root.fetch(true) }
     function open(): void { root.openStory() }
+    function apply(when: string): void { root.apply(when) }
   }
 }

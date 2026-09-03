@@ -36,7 +36,12 @@ different mornings:
 - **Matching theme** generated with [Aether](https://github.com/omacom/aether) and
   applied as an ordinary Omarchy theme named **Bing**
 - **Dark, light, or auto** palettes; auto is light during the day and dark at night
-- **A week of images** kept in the theme's backgrounds folder, older ones pruned
+- **A week of pictures from day one.** The first fetch brings down the last
+  seven days, not just today's, so the archive is full before you have finished
+  reading this. One new picture a day after that, the oldest pruned
+- **Preview before you switch.** The panel shows the week as a grid; click any
+  picture to see the palette Aether would build from it, then apply it with one
+  more click. The theme follows the picture, exactly as it does each morning
 - **Robust scheduling**: knows when Bing's next image is due, survives suspend and
   offline stretches, never hammers the API
 - **Wallpaper-only mode** if you would rather keep your own theme
@@ -89,10 +94,15 @@ disable or remove it from `Omarchy Menu > Setup > Plugins`.
 | Show the picture, credit and settings | Left-click the bar pill |
 | Refresh now | Middle-click the pill, or **Refresh** in the panel |
 | Read today's story on Bing | Right-click the pill, or **Open story** |
+| See what another day's picture would do to the theme | Click it under **This week** in the panel; the palette chips update |
+| Switch to that picture and theme | **Use this picture** (or press Return); Escape goes back to the current one |
 | Open this week's images | **Wallpapers** in the panel |
 | Cycle through the week's images | `omarchy theme bg next` |
-| Go back to an earlier day's picture and theme | `bing-wallpaper fetch --day 2` (0 = today, up to 7) |
-| From a script or keybinding | `omarchy-shell io.github.chrisandtre.bing-wallpaper refresh` |
+| Switch pictures from the terminal | `bing-wallpaper apply 2026-09-01`, `apply 2` (days ago), or `fetch --day 2` |
+| From a script or keybinding | `omarchy-shell io.github.chrisandtre.bing-wallpaper refresh`, or `... apply 2026-09-01` |
+
+A picture you pick by hand stays until Bing's next image lands, then the daily
+rhythm resumes.
 
 ## Settings
 
@@ -109,7 +119,7 @@ options, so nothing else on your system is modified.
 | `lightEnd` | `19` | Hour (0-24) when `auto` switches back to dark |
 | `extractMode` | `normal` | Aether extraction mode: `normal`, `colorful`, `muted`, `pastel`, `bright`, `material`, `analogous`, `monochromatic`, `high-contrast` |
 | `applyTheme` | `true` | `false` keeps your current theme and only sets the wallpaper |
-| `retentionDays` | `7` | How many days of images to keep |
+| `retentionDays` | `7` | How many days of pictures to keep and show in the panel (Bing serves at most 8) |
 | `notify` | `true` | Desktop notification when a new picture lands |
 | `resolution` | `UHD` | Preferred download size; falls back to `1920x1200`, then `1920x1080` |
 | `screensaver` | `true` | Draw today's picture as the Omarchy screensaver art |
@@ -177,13 +187,18 @@ The bundled CLI edits the same entry:
 ```
 Service.qml ── every 15 min ──▶ bin/bing-wallpaper fetch
                                       │
-                                      ├─ Bing HPImageArchive API (title, credit, story link)
-                                      ├─ download the JPEG ─▶ ~/.config/omarchy/themes/bing/backgrounds/
+                                      ├─ Bing HPImageArchive API: the last 8 days (title, credit, story link)
+                                      ├─ download today's JPEG ─▶ ~/.config/omarchy/themes/bing/backgrounds/
                                       ├─ aether --generate --no-apply ─▶ colors.toml (normalized for Omarchy)
                                       ├─ omarchy theme set bing ; omarchy theme bg set <today>
-                                      └─ ~/.local/state/bing-wallpaper/state.json
-                                                   ▲
-BarWidget.qml + Panel.qml ── watch ───────────────┘
+                                      ├─ ~/.local/state/bing-wallpaper/state.json
+                                      │
+                                      └─ then, for the week behind it:
+                                         ├─ download anything missing
+                                         ├─ aether --generate --no-apply per picture ─▶ its palette
+                                         └─ ~/.local/state/bing-wallpaper/archive.json
+                                                      ▲
+BarWidget.qml + Panel.qml ── watch both ─────────────┘
 ```
 
 The fetch is idempotent. It records when Bing's next picture is due and does
@@ -191,13 +206,20 @@ nothing until then, unless a setting changed or you asked for a refresh. Theme
 application, which restarts terminals and re-tints apps exactly like
 `omarchy theme set`, only happens when the picture or palette actually changed.
 
+The archive is filled in after today's picture is on screen, so a first run
+themes the desktop within a couple of seconds and the rest of the week arrives
+behind it. Each archived picture's palette is extracted once per palette mode
+and style (about 50 ms each) and cached in `archive.json`; changing **Palette
+mode** or **Palette style** recomputes all of them so the previews always show
+what you would actually get.
+
 ## What it touches
 
 For people who like to know before they install:
 
 - **Network:** `www.bing.com` only, for the daily metadata and the image.
 - **Writes:** `~/.config/omarchy/themes/bing/` (the generated theme and images),
-  `~/.local/state/bing-wallpaper/state.json`, and its own entry in
+  `~/.local/state/bing-wallpaper/` (`state.json`, `archive.json`), and its own entry in
   `~/.config/omarchy/shell.json`. Omarchy's own theme machinery then updates the
   usual per-app theme files, as it does for any theme switch.
 - **Runs:** `curl`, `jq`, `file`, `aether`, and Omarchy's `omarchy-theme-set`,
@@ -207,14 +229,18 @@ For people who like to know before they install:
 ## CLI
 
 ```
-bing-wallpaper fetch [--force] [--day N] [--market MKT] [--mode dark|light|auto]
+bing-wallpaper fetch [--force] [--day N] [--date YYYY-MM-DD] [--market MKT] [--mode dark|light|auto]
                              # --day N applies the picture from N days ago (0-7);
                              # it holds until tomorrow's image arrives
+bing-wallpaper apply WHEN    # switch to an archived picture: a date, an id
+                             # from `archive`, or N days ago
+bing-wallpaper archive       # this week's pictures and their palettes (archive.json)
 bing-wallpaper status        # contents of state.json
 bing-wallpaper settings      # effective settings
 bing-wallpaper set KEY VALUE # update a setting in shell.json
-bing-wallpaper open          # open today's story in the browser
+bing-wallpaper open [WHEN]   # open the story behind today's (or an archived) picture
 bing-wallpaper next          # when the next check is due
+bing-wallpaper install-deps  # install ImageMagick for the screensaver
 ```
 
 Every setting can be overridden per invocation with `BING_WALLPAPER_<KEY>`,

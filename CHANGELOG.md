@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-09-03
+
+### Added
+
+- **The whole week from the first run.** One fetch now asks Bing for the last
+  eight days and downloads the seven the plugin keeps, so the archive is full
+  out of the box instead of filling up over a week. Today's picture is applied
+  first; the rest come down behind it.
+- **Palette previews.** The panel shows the week as a grid of pictures, each
+  with a strip of the palette Aether would build from it. Click one to preview
+  its picture and palette in the hero, then **Use this picture** (or Return)
+  to switch wallpaper and theme to it; Escape goes back. Palettes are extracted
+  once per mode and style and cached in `~/.local/state/bing-wallpaper/archive.json`,
+  and recomputed when **Palette mode** or **Palette style** changes.
+- `bing-wallpaper apply <date | id | days-ago>` switches to an archived picture
+  from the terminal; `bing-wallpaper archive` prints the archive; `open` takes
+  an optional picture. `fetch --date YYYY-MM-DD` is the underlying primitive.
+- `omarchy-shell io.github.chrisandtre.bing-wallpaper apply <when>` IPC call.
+
+### Fixed
+
+- **Open story** and **Wallpapers** in the panel, and right-click on the bar
+  pill, did nothing: they called a `shellQuote` helper the bar does not have,
+  so the click handlers threw. They now launch through the shell's argv runner.
+
 ## [0.3.0] - 2026-09-03
 
 ### Added

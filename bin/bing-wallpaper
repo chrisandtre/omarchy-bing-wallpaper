@@ -4,12 +4,15 @@
 # wallpaper, and (optionally) build a matching "Bing" theme with Aether.
 #
 # Usage:
-#   bing-wallpaper fetch [--force] [--day N] [--market MKT] [--mode dark|light|auto]
+#   bing-wallpaper fetch [--force] [--day N] [--date YYYY-MM-DD] [--market MKT] [--mode dark|light|auto]
 #                                    --day N picks the image from N days ago (0-7)
+#   bing-wallpaper apply <when>      Switch to an archived picture: a date, an image
+#                                    id from 'archive', or N days ago
+#   bing-wallpaper archive           Print this week's pictures and their palettes as JSON
 #   bing-wallpaper status            Print the current state as JSON
 #   bing-wallpaper settings          Print the effective settings as JSON
 #   bing-wallpaper set <key> <val>   Update one setting inline in shell.json
-#   bing-wallpaper open              Open today's story in the browser
+#   bing-wallpaper open [when]       Open the story behind a picture in the browser
 #   bing-wallpaper next              Print when the next Bing image is expected
 #   bing-wallpaper install-deps      Install ImageMagick (needed by the screensaver)
 #
@@ -31,10 +34,13 @@ BRANDING_DIR="$CONFIG_HOME/omarchy/branding"
 SCREENSAVER_FILE="$BRANDING_DIR/screensaver.txt"
 STATE_DIR="$STATE_HOME/bing-wallpaper"
 STATE_FILE="$STATE_DIR/state.json"
+ARCHIVE_FILE="$STATE_DIR/archive.json"
 SCREENSAVER_BACKUP="$STATE_DIR/screensaver.txt.orig"
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bing-wallpaper.lock"
 
 BING_HOST="https://www.bing.com"
+# Bing's archive API serves at most the last eight pictures (idx 0..7).
+BING_ARCHIVE_MAX=8
 
 # Setting name -> default. Keep in sync with README.md and Model.js.
 declare -A DEFAULTS=(
@@ -223,11 +229,32 @@ next_mode_flip() {
 
 # ------------------------------------------------------------------- bing
 
+# The last BING_ARCHIVE_MAX pictures for a market, newest first, as a JSON
+# array. One call covers today's image and the week behind it.
 fetch_metadata() {
-  local market="$1" day="${2:-0}"
+  local market="$1"
   curl -fsSL --max-time 20 \
-    "$BING_HOST/HPImageArchive.aspx?format=js&idx=$day&n=1&mkt=$market" |
-    jq -c '.images[0]'
+    "$BING_HOST/HPImageArchive.aspx?format=js&idx=0&n=$BING_ARCHIVE_MAX&mkt=$market" |
+    jq -c '.images // [] | map(select(type == "object"))'
+}
+
+# Derive the pieces we name files and state after from one Bing image record.
+# Sets: META_STARTDATE META_FULLSTART META_URLBASE META_TITLE META_COPYRIGHT
+#       META_LINK META_NAME META_DATE META_ID META_IMAGE
+parse_image_meta() {
+  local meta="$1" market="$2"
+  META_STARTDATE=$(jq -r '.startdate // ""' <<<"$meta")
+  META_FULLSTART=$(jq -r '.fullstartdate // ""' <<<"$meta")
+  META_URLBASE=$(jq -r '.urlbase // ""' <<<"$meta")
+  META_TITLE=$(jq -r '.title // ""' <<<"$meta")
+  META_COPYRIGHT=$(jq -r '.copyright // ""' <<<"$meta")
+  META_LINK=$(jq -r '.copyrightlink // ""' <<<"$meta")
+  # "/th?id=OHR.AZWilderness_EN-US4070936347" -> "AZWilderness"
+  META_NAME=$(sed -E 's/.*id=OHR\.([A-Za-z0-9]+)_.*/\1/' <<<"$META_URLBASE")
+  [[ -n $META_NAME && $META_NAME != "$META_URLBASE" ]] || META_NAME="bing"
+  META_DATE="${META_STARTDATE:0:4}-${META_STARTDATE:4:2}-${META_STARTDATE:6:2}"
+  META_ID="${META_STARTDATE}-${market}-${META_NAME}"
+  META_IMAGE="$BACKGROUNDS_DIR/$META_DATE-$META_NAME-$market.jpg"
 }
 
 # The Bing archive gives fullstartdate as UTC "YYYYMMDDHHMM"; the next image
@@ -260,6 +287,7 @@ download_image() {
 prune_backgrounds() {
   local keep_days="${SETTINGS[retentionDays]}" cutoff file stamp
   cutoff=$(date -d "-$keep_days days" +%s)
+  rm -f -- "$BACKGROUNDS_DIR"/*.part 2>/dev/null
   for file in "$BACKGROUNDS_DIR"/????-??-??-*; do
     [[ -f $file ]] || continue
     stamp=$(basename "$file" | cut -c1-10)
@@ -267,6 +295,166 @@ prune_backgrounds() {
       rm -f -- "$file"
     fi
   done
+}
+
+# ----------------------------------------------------------------- archive
+
+# The archive is the week of pictures behind today's, each with the palette
+# Aether would build from it in the current mode and style. It lets the panel
+# show what switching pictures would do to the theme before anyone commits.
+# Written to archive.json; the panel watches that file.
+
+# How many pictures to keep in the archive: a week by default, never more
+# than Bing serves.
+archive_count() {
+  local n="${SETTINGS[retentionDays]}"
+  (( n > BING_ARCHIVE_MAX )) && n=$BING_ARCHIVE_MAX
+  (( n < 1 )) && n=1
+  echo "$n"
+}
+
+read_archive() {
+  [[ -f $ARCHIVE_FILE ]] && jq -c . "$ARCHIVE_FILE" 2>/dev/null || echo '{}'
+}
+
+archive_get() {
+  read_archive | jq -r --arg k "$1" '.[$k] // empty'
+}
+
+# Extract the palette Aether would build for an image, as a JSON object of
+# colour name -> hex (background, foreground, accent, color0..color15, ...).
+# Prints null when Aether is missing or fails; takes about 50 ms otherwise.
+extract_palette() {
+  local image="$1" mode="$2" extract_mode="$3" work
+  command -v aether >/dev/null 2>&1 || { echo null; return 0; }
+  work=$(mktemp -d)
+  local -a args=(--generate "$image" --no-apply --output "$work" --extract-mode "$extract_mode" --no-zed --no-vscode --no-neovim)
+  [[ $mode == light ]] && args+=(--light-mode)
+  if aether "${args[@]}" >/dev/null 2>&1 && [[ -f $work/colors.toml ]]; then
+    awk -F'"' '
+      /^[a-zA-Z0-9_]+[[:space:]]*=[[:space:]]*"#[0-9a-fA-F]{6}"/ {
+        key = $0; sub(/[[:space:]]*=.*/, "", key); print key "\t" $2
+      }' "$work/colors.toml" |
+      jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries'
+  else
+    echo null
+  fi
+  rm -rf "$work"
+}
+
+# One archive entry. $3 is the on-disk image or empty while it is still
+# pending; $4 is the palette JSON (object or null).
+archive_entry() {
+  local meta="$1" market="$2" image="$3" colors="$4" day="$5"
+  parse_image_meta "$meta" "$market"
+  jq -cn \
+    --arg id "$META_ID" --arg date "$META_DATE" --argjson day "$day" \
+    --arg title "$META_TITLE" --arg copyright "$META_COPYRIGHT" --arg link "$META_LINK" \
+    --arg image "$image" --arg market "$market" --argjson colors "$colors" \
+    '{id: $id, date: $date, day: $day, title: $title, copyright: $copyright,
+      link: $link, market: $market, image: (if $image == "" then null else $image end),
+      colors: $colors}'
+}
+
+# Write archive.json from a JSON array of entries.
+write_archive() {
+  local entries="$1" market="$2" mode="$3" extract_mode="$4" wanted="$5" status="$6" tmp
+  mkdir -p "$STATE_DIR"
+  tmp=$(mktemp "$STATE_DIR/archive.XXXXXX")
+  jq -n --arg market "$market" --arg mode "$mode" --arg extractMode "$extract_mode" \
+    --argjson wanted "$wanted" --arg status "$status" --arg updatedAt "$(now_iso)" \
+    --argjson entries "$entries" \
+    '{market: $market, mode: $mode, extractMode: $extractMode, wanted: $wanted,
+      status: $status, updatedAt: $updatedAt, entries: $entries}' >"$tmp" &&
+    mv "$tmp" "$ARCHIVE_FILE"
+}
+
+# Bring the archive in line with the metadata we just fetched: download any
+# picture we do not have yet, oldest last, and record each one's palette.
+# The file is rewritten after every download so the panel fills in as it goes,
+# which matters most on the very first run when a whole week comes down.
+sync_archive() {
+  local images="$1" market="$2" mode="$3" extract_mode="${SETTINGS[extractMode]}"
+  local wanted total count i meta entries='[]' entry colors image missing=0 done=0
+
+  wanted=$(archive_count)
+  total=$(jq 'length' <<<"$images")
+  count=$wanted
+  (( count > total )) && count=$total
+
+  # Palettes already computed for this mode and style are reused; only a new
+  # picture or a changed setting costs an Aether run.
+  local previous='{}'
+  if [[ $(archive_get mode) == "$mode" && $(archive_get extractMode) == "$extract_mode" ]]; then
+    previous=$(read_archive | jq -c '[.entries[]? | select(.colors != null) | {key: .id, value: .colors}] | from_entries')
+  fi
+
+  # Pass one: what we already have, so the panel can show placeholders for the
+  # rest straight away.
+  for (( i = 0; i < count; i++ )); do
+    meta=$(jq -c ".[$i]" <<<"$images")
+    parse_image_meta "$meta" "$market"
+    if [[ -s $META_IMAGE ]]; then
+      colors=$(jq -c --arg id "$META_ID" '.[$id] // null' <<<"$previous")
+      [[ $colors != null ]] || colors=$(extract_palette "$META_IMAGE" "$mode" "$extract_mode")
+      entry=$(archive_entry "$meta" "$market" "$META_IMAGE" "$colors" "$i")
+    else
+      (( missing++ ))
+      entry=$(archive_entry "$meta" "$market" "" null "$i")
+    fi
+    entries=$(jq -c --argjson e "$entry" '. + [$e]' <<<"$entries")
+  done
+
+  if (( missing == 0 )); then
+    write_archive "$entries" "$market" "$mode" "$extract_mode" "$wanted" ready
+    write_state archive=ready archiveProgress=""
+    return 0
+  fi
+
+  write_archive "$entries" "$market" "$mode" "$extract_mode" "$wanted" downloading
+  write_state archive=downloading archiveProgress="0/$missing"
+  log "bing-wallpaper: downloading $missing archived picture(s)"
+
+  # Pass two: fetch what is missing, newest first.
+  for (( i = 0; i < count; i++ )); do
+    image=$(jq -r ".[$i].image // empty" <<<"$entries")
+    [[ -z $image ]] || continue
+    meta=$(jq -c ".[$i]" <<<"$images")
+    parse_image_meta "$meta" "$market"
+    if download_image "$META_URLBASE" "$META_IMAGE" >/dev/null; then
+      colors=$(extract_palette "$META_IMAGE" "$mode" "$extract_mode")
+      entry=$(archive_entry "$meta" "$market" "$META_IMAGE" "$colors" "$i")
+      entries=$(jq -c --argjson i "$i" --argjson e "$entry" '.[$i] = $e' <<<"$entries")
+    else
+      log "could not download $META_URLBASE"
+    fi
+    (( done++ ))
+    write_archive "$entries" "$market" "$mode" "$extract_mode" "$wanted" downloading
+    write_state archiveProgress="$done/$missing"
+  done
+
+  local still_missing
+  still_missing=$(jq '[.[] | select(.image == null)] | length' <<<"$entries")
+  if (( still_missing > 0 )); then
+    write_archive "$entries" "$market" "$mode" "$extract_mode" "$wanted" partial
+    write_state archive=partial archiveProgress=""
+  else
+    write_archive "$entries" "$market" "$mode" "$extract_mode" "$wanted" ready
+    write_state archive=ready archiveProgress=""
+  fi
+}
+
+# Resolve "what the user pointed at" -- a date, an archive id, or N days
+# ago -- into the archive entry's date. Prints the date or nothing.
+archive_lookup_date() {
+  local key="$1"
+  if [[ $key =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "$key"
+  elif [[ $key =~ ^[0-9]$ ]]; then
+    read_archive | jq -r --argjson d "$key" '.entries[]? | select(.day == $d) | .date' | head -1
+  else
+    read_archive | jq -r --arg k "$key" '.entries[]? | select(.id == $k) | .date' | head -1
+  fi
 }
 
 # ------------------------------------------------------------------- theme
@@ -475,7 +663,7 @@ notify() {
 # ------------------------------------------------------------------- fetch
 
 cmd_fetch() {
-  local force=0 day=0
+  local force=0 day=0 want_date=""
   while (( $# > 0 )); do
     case "$1" in
       --force | -f) force=1 ;;
@@ -485,9 +673,14 @@ cmd_fetch() {
         # An explicit day is always a change the user wants applied now.
         force=1
         ;;
+      --date)
+        want_date="$2"; shift
+        [[ $want_date =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || fail "--date takes YYYY-MM-DD"
+        force=1
+        ;;
       --market) SETTINGS[market]="$2"; shift ;;
       --mode) SETTINGS[mode]="$2"; shift ;;
-      -h | --help) sed -n '2,20p' "$0"; return 0 ;;
+      -h | --help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) fail "unknown fetch option: $1" ;;
     esac
     shift
@@ -509,8 +702,9 @@ cmd_fetch() {
     sync_screensaver "$(state_get image)"
   fi
 
-  # Cheap path: nothing can have changed yet, and the palette mode is the
-  # same. The service ticks often so this has to be nearly free.
+  # Cheap path: nothing can have changed yet, the palette mode is the same,
+  # and the archive matches. The service ticks often so this has to be
+  # nearly free.
   next_check=$(state_get nextCheck)
   if (( ! force )) &&
      [[ $(state_get market) == "$market" ]] &&
@@ -518,35 +712,45 @@ cmd_fetch() {
      [[ $(state_get extractMode) == "${SETTINGS[extractMode]}" ]] &&
      [[ $(state_get applyTheme) == "${SETTINGS[applyTheme]}" ]] &&
      [[ -n $next_check && $now -lt $next_check ]] &&
-     [[ -f $(state_get image) ]]; then
+     [[ -f $(state_get image) ]] &&
+     [[ $(archive_get status) == ready ]] &&
+     [[ $(archive_get market) == "$market" ]] &&
+     [[ $(archive_get mode) == "$mode" ]] &&
+     [[ $(archive_get extractMode) == "${SETTINGS[extractMode]}" ]] &&
+     [[ $(archive_get wanted) == "$(archive_count)" ]]; then
     return 0
   fi
 
   write_state status=fetching updatedAt="$(now_iso)"
 
-  local meta
-  if ! meta=$(fetch_metadata "$market" "$day") || [[ -z $meta || $meta == null ]]; then
+  local images
+  if ! images=$(fetch_metadata "$market") || [[ -z $images || $(jq 'length' <<<"$images") -eq 0 ]]; then
     write_state status=error error="Could not reach Bing for market $market" nextCheck=$(( now + 600 ))
     log "could not fetch Bing metadata for $market"
     return 1
   fi
 
-  local startdate fullstart urlbase title copyright link name image_id
-  startdate=$(jq -r '.startdate' <<<"$meta")
-  fullstart=$(jq -r '.fullstartdate' <<<"$meta")
-  urlbase=$(jq -r '.urlbase' <<<"$meta")
-  title=$(jq -r '.title // ""' <<<"$meta")
-  copyright=$(jq -r '.copyright // ""' <<<"$meta")
-  link=$(jq -r '.copyrightlink // ""' <<<"$meta")
-  # "/th?id=OHR.AZWilderness_EN-US4070936347" -> "AZWilderness"
-  name=$(sed -E 's/.*id=OHR\.([A-Za-z0-9]+)_.*/\1/' <<<"$urlbase")
-  [[ -n $name && $name != "$urlbase" ]] || name="bing"
-  image_id="${startdate}-${market}-${name}"
+  # An explicit date is looked up in the fresh list, so a picture picked from
+  # the panel stays the right picture even if a new one landed in between.
+  if [[ -n $want_date ]]; then
+    local compact="${want_date//-/}"
+    day=$(jq -r --arg d "$compact" 'to_entries[] | select(.value.startdate == $d) | .key' <<<"$images" | head -1)
+    # The picture on screen is still fine, so this is a CLI error, not a state.
+    [[ -n $day ]] || { write_state status=ok; fail "Bing has no picture for $want_date in $market"; }
+  fi
 
-  local date_fmt image
-  date_fmt="${startdate:0:4}-${startdate:4:2}-${startdate:6:2}"
+  local meta
+  meta=$(jq -c ".[$day] // empty" <<<"$images")
+  if [[ -z $meta ]]; then
+    write_state status=ok
+    fail "Bing has no picture from $day days ago for $market"
+  fi
+
+  parse_image_meta "$meta" "$market"
+  local fullstart="$META_FULLSTART" urlbase="$META_URLBASE" title="$META_TITLE"
+  local copyright="$META_COPYRIGHT" link="$META_LINK" image_id="$META_ID"
+  local date_fmt="$META_DATE" image="$META_IMAGE"
   mkdir -p "$BACKGROUNDS_DIR"
-  image="$BACKGROUNDS_DIR/$date_fmt-$name-$market.jpg"
 
   local resolution="cached"
   if [[ ! -s $image ]]; then
@@ -599,8 +803,6 @@ cmd_fetch() {
     sync_screensaver "$image"
   fi
 
-  prune_backgrounds
-
   write_state \
     status=ok error="" \
     imageId="$image_id" image="$image" date="$date_fmt" market="$market" day="$day" \
@@ -615,11 +817,31 @@ cmd_fetch() {
   fi
 
   log "bing-wallpaper: $date_fmt [$market] \"$title\" ($mode, theme: $theme_status)"
+
+  # Today's picture is on screen; now fill in the week behind it. This is the
+  # slow part on a first run, so it comes after the desktop is already themed.
+  sync_archive "$images" "$market" "$mode"
+  prune_backgrounds
+}
+
+# Switch to an archived picture. Accepts a date, an archive id, or N days ago.
+cmd_apply() {
+  local key="$1" when
+  [[ -n $key ]] || fail "usage: bing-wallpaper apply <YYYY-MM-DD | image id | days ago>"
+  when=$(archive_lookup_date "$key")
+  [[ -n $when ]] || fail "no archived picture matches '$key' (see 'bing-wallpaper archive')"
+  cmd_fetch --date "$when"
 }
 
 cmd_open() {
-  local link
-  link=$(state_get link)
+  local key="${1:-}" link when
+  if [[ -n $key ]]; then
+    when=$(archive_lookup_date "$key")
+    [[ -n $when ]] || fail "no archived picture matches '$key'"
+    link=$(read_archive | jq -r --arg d "$when" '.entries[]? | select(.date == $d) | .link // empty' | head -1)
+  else
+    link=$(state_get link)
+  fi
   [[ -n $link ]] || fail "no story link yet; run fetch first"
   if command -v omarchy-launch-browser >/dev/null 2>&1; then
     setsid omarchy-launch-browser "$link" >/dev/null 2>&1 &
@@ -656,6 +878,8 @@ main() {
   load_settings
   case "$cmd" in
     fetch) cmd_fetch "$@" ;;
+    apply) cmd_apply "$@" ;;
+    archive) read_archive | jq . ;;
     status) read_state | jq . ;;
     settings) print_settings ;;
     set)
@@ -667,11 +891,11 @@ main() {
         sync_screensaver "$(state_get image)"
       fi
       ;;
-    open) cmd_open ;;
+    open) cmd_open "$@" ;;
     next) cmd_next ;;
     install-deps) cmd_install_deps ;;
-    -h | --help | help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) fail "unknown command '$cmd' (fetch|status|settings|set|open|next|install-deps)" ;;
+    -h | --help | help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|next|install-deps)" ;;
   esac
 }
 
