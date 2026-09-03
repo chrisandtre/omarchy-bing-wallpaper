@@ -1,8 +1,8 @@
 <div align="center">
 
-# Bing Wallpaper for Omarchy
+# Bing Wallpaper & Theme for Omarchy
 
-**The Bing image of the day as your wallpaper, with a matching theme built from its colors every morning.**
+**The Bing image of the day as your wallpaper, and a matching theme built from its colors every morning.**
 
 [![CI](https://github.com/chrisandtre/omarchy-bing-wallpaper/actions/workflows/ci.yml/badge.svg)](https://github.com/chrisandtre/omarchy-bing-wallpaper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -29,6 +29,17 @@ the image, the photographer's credit, and the plugin's settings.
   offline stretches, never hammers the API
 - **Wallpaper-only mode** if you would rather keep your own theme
 - **No sudo or pkexec is required.** Everything happens in your home directory.
+
+## How is this different from the other Bing plugins?
+
+Two fine Bing wallpaper plugins already exist for Omarchy
+([odessa2](https://github.com/odessa2/bing-wallpaper-for-omarchy) and
+[jestemkarol](https://github.com/jestemkarol/bing-wallpaper-omarchy)). Use one
+of those if you only want the picture. This one exists for the other half of the
+Windows experience: the **theme follows the picture**. Every morning Aether
+extracts a palette from the new image and the whole desktop is re-themed to
+match, with dark, light or time-of-day palettes, a choice of extraction styles,
+and a settings panel to steer it all.
 
 ## Requirements
 
