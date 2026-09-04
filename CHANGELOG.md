@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-09-04
+
+### Fixed
+
+- With `screensaverStyle` on `auto`, adding the `--existing-color-handling`
+  flag to `omarchy-screensaver` now switches the art to colour on the next
+  fetch instead of waiting for the next picture.
+
 ## [0.5.0] - 2026-09-04
 
 ### Added

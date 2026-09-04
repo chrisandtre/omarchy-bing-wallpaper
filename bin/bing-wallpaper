@@ -1001,9 +1001,12 @@ cmd_fetch() {
 
   # The screensaver is rendered from the picture we already have, so the
   # toggle can be honoured right now -- it must not wait on the fetch schedule.
+  # "auto" also re-renders when Omarchy gains (or loses) colour support, which
+  # is a change on the system rather than in the settings.
   if [[ $(state_get screensaverOn) != "${SETTINGS[screensaver]}" ]] ||
      [[ ${SETTINGS[screensaver]} == true &&
-        $(state_get screensaverSignature) != "$(screensaver_signature)" ]]; then
+        ( $(state_get screensaverSignature) != "$(screensaver_signature)" ||
+          $(state_get screensaverStyle) != "$(effective_screensaver_style)" ) ]]; then
     sync_screensaver "$(state_get image)"
   fi
 
