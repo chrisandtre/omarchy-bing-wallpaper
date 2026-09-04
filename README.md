@@ -145,10 +145,11 @@ the same random `ttfx` effects as always — the vibe is unchanged, the picture 
 not. This is **on by default**; **Use as screensaver** in the panel turns it off
 and puts your old art back.
 
-<img src="docs/screensaver.png" alt="Four screensavers: a canyon, a whale shark, a forest floor and a shoreline, each drawn as ASCII art and coloured by a different ttfx effect" width="920">
+<img src="docs/screensaver.png" alt="Four screensavers in the depth style: a lighthouse on a marsh mid-way through the beams effect, beach huts on a shore, surfers seen from above, and a tiled ceiling in Samarkand, each drawn in the photograph's own colours with its title and place underneath" width="920">
 
-<sub>Four mornings, four pictures, four of the random effects `ttfx` picks from.
-These are real screenshots of the running screensaver, not mockups.</sub>
+<sub>Four pictures, four of the random effects `ttfx` picks from, in the `depth`
+style with captions. Real screenshots of `ttfx` running the plugin's art in
+Omarchy's screensaver terminal with the colour flag on, not mockups.</sub>
 
 Omarchy's screensaver is a single plain-text file. `omarchy-screensaver` loops
 
