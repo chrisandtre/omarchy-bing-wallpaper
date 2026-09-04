@@ -50,6 +50,12 @@ Panel {
   readonly property bool applyTheme: setting("applyTheme", true) !== false && setting("applyTheme", true) !== "false"
   readonly property bool screensaver: setting("screensaver", true) !== false && setting("screensaver", true) !== "false"
   readonly property string screensaverSize: String(setting("screensaverSize", "120x29"))
+  readonly property string screensaverStyle: String(setting("screensaverStyle", "auto"))
+  readonly property bool screensaverCaption: setting("screensaverCaption", true) !== false && setting("screensaverCaption", true) !== "false"
+  readonly property bool screensaverParallax: setting("screensaverParallax", true) !== false && setting("screensaverParallax", true) !== "false"
+  // Parallax only means something for the depth style ("auto" is depth
+  // wherever colour works).
+  readonly property bool parallaxApplies: screensaverStyle === "auto" || screensaverStyle === "depth"
 
   function open() {
     openedFromHotkey = false
@@ -585,16 +591,57 @@ Panel {
             onClicked: root.update("screensaver", !root.screensaver)
           }
 
-          Dropdown {
+          Row {
             width: parent.width
-            label: "Screensaver size"
-            value: root.screensaverSize
-            options: Model.SCREENSAVER_SIZES
+            spacing: Style.space(10)
+
+            Dropdown {
+              width: (parent.width - parent.spacing) / 2
+              label: "Screensaver style"
+              value: root.screensaverStyle
+              options: Model.SCREENSAVER_STYLES
+              enabled: root.screensaver
+              opacity: root.screensaver ? 1 : 0.5
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) { if (v !== root.screensaverStyle) root.update("screensaverStyle", v) }
+            }
+
+            Dropdown {
+              width: (parent.width - parent.spacing) / 2
+              label: "Screensaver size"
+              value: root.screensaverSize
+              options: Model.SCREENSAVER_SIZES
+              enabled: root.screensaver
+              opacity: root.screensaver ? 1 : 0.5
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(v) { if (v !== root.screensaverSize) root.update("screensaverSize", v) }
+            }
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Caption"
+            description: "Name the picture and its place under the art"
+            checked: root.screensaverCaption
             enabled: root.screensaver
             opacity: root.screensaver ? 1 : 0.5
             foreground: root.foreground
             fontFamily: root.fontFamily
-            onChanged: function(v) { if (v !== root.screensaverSize) root.update("screensaverSize", v) }
+            onClicked: root.update("screensaverCaption", !root.screensaverCaption)
+          }
+
+          Toggle {
+            width: parent.width
+            label: "Parallax drift"
+            description: "Shift the scene by depth between effects, so the camera seems to move"
+            checked: root.screensaverParallax
+            enabled: root.screensaver && root.parallaxApplies
+            opacity: root.screensaver && root.parallaxApplies ? 1 : 0.5
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.update("screensaverParallax", !root.screensaverParallax)
           }
 
           // ---- Status

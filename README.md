@@ -46,8 +46,9 @@ different mornings:
   offline stretches, never hammers the API
 - **Wallpaper-only mode** if you would rather keep your own theme
 - **Matching screensaver**: today's picture drawn as ASCII art in place of the
-  Omarchy logo, dissolved by the same `ttfx` effects. On by default; one toggle
-  puts your old art back
+  Omarchy logo, dissolved by the same `ttfx` effects, in the photograph's own
+  colours, with a sense of depth, a slow parallax drift between effects and a
+  caption naming the place. On by default; one toggle puts your old art back
 - **No sudo or pkexec is required** for anything the plugin does on its own.
   Everything happens in your home directory. (The one exception is installing
   ImageMagick for the screensaver, which is an ordinary package install you
@@ -72,6 +73,7 @@ and a settings panel to steer it all.
 | `curl`, `jq`, `file` | Fetching and parsing Bing's API, checking downloads | Present on every stock Omarchy install |
 | [Aether](https://github.com/omacom/aether) | Extracting a palette from each picture | Optional. Without it the plugin sets the wallpaper only and says so in the panel. `omarchy pkg aur add aether` |
 | `magick` (ImageMagick) | Rendering the screensaver art | Optional, and only when the screensaver setting is on. `bing-wallpaper install-deps` installs it |
+| `socat` | Waking the parallax loop when the screensaver opens | Present on stock Omarchy; without it the loop polls instead |
 
 ## Install
 
@@ -123,7 +125,10 @@ options, so nothing else on your system is modified.
 | `notify` | `true` | Desktop notification when a new picture lands |
 | `resolution` | `UHD` | Preferred download size; falls back to `1920x1200`, then `1920x1080` |
 | `screensaver` | `true` | Draw today's picture as the Omarchy screensaver art |
-| `screensaverSize` | `120x29` | Art size in terminal cells: `80x20`, `120x29`, `160x39`, `200x48` |
+| `screensaverSize` | `120x29` | Art size in terminal cells: `80x20`, `120x29`, `160x39`, `200x48` (the caption comes out of this budget) |
+| `screensaverStyle` | `auto` | `depth` (colour with depth and parallax), `color`, `mono` (plain glyphs), or `auto`: `depth` where Omarchy keeps colour, `mono` where it does not |
+| `screensaverCaption` | `true` | Write the picture's title and place under the art |
+| `screensaverParallax` | `true` | Drift the scene by depth between effects (`depth` style only) |
 | `showTitle` | `true` | Show the title next to the icon in the bar |
 | `maxTitleChars` | `28` | Truncate long titles in the bar |
 
@@ -155,6 +160,53 @@ re-reading it every cycle, so writing that file is the whole integration. There
 is nothing to restart, and a screensaver that is already running picks up the
 new picture on its next effect.
 
+**Styles.** `screensaverStyle` picks how the picture is drawn:
+
+- `mono` — a plain luminance ramp, the way it worked before 0.5.
+- `color` — every cell carries the photograph's own colour as a truecolor
+  escape. Sky is blue, grass is green, a lighthouse is red and white; and since
+  the theme is extracted from the same pixels, the art matches the theme by
+  construction.
+- `depth` — colour plus a cheap sense of space. The horizon is found, distant
+  ground fades toward the sky's haze, near cells get heavier glyphs, and five
+  frames shifted by distance are rendered so the parallax loop can drift the
+  camera between effects (below). Close-ups with no plausible horizon come out
+  flat, which is the right answer for them.
+- `auto` (default) — `depth` where colour works, `mono` where it does not.
+
+**Colour needs one line from Omarchy.** `ttfx` honours the colours in its input
+only when told to, and stock Omarchy 4.0's `omarchy-screensaver` does not tell
+it. Until it does, the escapes are stripped and coloured art degrades to plain
+glyphs — which is why `auto` picks `mono` on a stock system, and the panel's
+status line says so. The change is one flag on the `ttfx` line in
+`/usr/bin/omarchy-screensaver`:
+
+```sh
+ttfx -i ~/.config/omarchy/branding/screensaver.txt \
+    --existing-color-handling dynamic \
+    --frame-rate 120 ...
+```
+
+`dynamic` lets every effect play in its own colours and settle into the
+picture's; `always` keeps the picture's colours throughout. The plugin detects
+the flag and switches `auto` to `depth` on the next fetch. The file is owned by
+the `omarchy` package, so a hand edit lasts until the next update; a pull
+request adding the flag upstream is the proper fix.
+
+**Parallax.** With `depth`, the service keeps `bing-wallpaper parallax` running.
+It sleeps on Hyprland's event socket until a screensaver window opens, then
+each time `omarchy-screensaver` starts a new effect it swaps the next frame into
+`screensaver.txt` — the effect that just began has already read the file, so it
+is the *following* dissolve that shows the shifted picture. Near ground moves
+up to three cells, the horizon barely moves, and the order is out to one side,
+back through the middle and out to the other, so the camera seems to wander
+slowly through the scene. `screensaverParallax` turns it off.
+
+**Caption.** The title and place Bing gives the picture are centred under the
+art, so a lighthouse four cells wide still gets named. `screensaverCaption`
+turns it off. The caption comes out of the `screensaverSize` budget, so the
+whole thing still fits the screen it was sized for.
+
 **On sizing.** `ttfx` centres the art without scaling it, and Omarchy's own logo
 is a fixed 79x28 on every display regardless of monitor, so this plugin uses a
 fixed size too rather than trying to adapt per screen. Terminal cells are about
@@ -168,7 +220,7 @@ branding screensaver` writes it too. The first time the plugin touches it, your
 existing art is copied to `~/.local/state/bing-wallpaper/screensaver.txt.orig`,
 and turning the setting back off restores it exactly. If you have edited the
 file yourself since, the plugin leaves it alone rather than overwriting your
-work.
+work, and the parallax loop stops rotating it.
 
 **Why not `omarchy transcode ascii`?** Omarchy ships an image-to-ASCII
 transcoder, but it is a 1-bit hard threshold built for logos: a photograph
@@ -241,6 +293,7 @@ bing-wallpaper set KEY VALUE # update a setting in shell.json
 bing-wallpaper open [WHEN]   # open the story behind today's (or an archived) picture
 bing-wallpaper next          # when the next check is due
 bing-wallpaper install-deps  # install ImageMagick for the screensaver
+bing-wallpaper parallax      # drift the screensaver between effects (the service runs this)
 ```
 
 Every setting can be overridden per invocation with `BING_WALLPAPER_<KEY>`,

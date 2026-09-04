@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-09-04
+
+### Added
+
+- **Colour screensaver.** The art can now carry the photograph's own colours:
+  every cell is written as a truecolor escape, so a blue sky, a green marsh and
+  a red-and-white lighthouse read as exactly that, and the art matches the
+  theme by construction since both come from the same pixels. `ttfx` keeps the
+  colours only when `omarchy-screensaver` passes `--existing-color-handling`,
+  which stock Omarchy 4.0 does not yet; see *Colour* in the README for the
+  one-line change and how the plugin falls back to plain glyphs until then.
+- **Depth.** The `depth` style finds the horizon, fades distant ground toward
+  the sky's haze and gives near cells heavier glyphs, so a landscape has a
+  foreground, a middle and a far away instead of one flat texture. Close-ups
+  with no horizon are rendered flat, deliberately.
+- **Parallax drift.** With `depth`, five frames shifted by distance are
+  rendered and `bing-wallpaper parallax` (kept running by the service) swaps
+  the next one in every time the screensaver begins a new effect, so the camera
+  seems to drift slowly through the scene between dissolves. Off with
+  `screensaverParallax`.
+- **Caption.** The picture's title and place are centred under the art, so a
+  lighthouse four cells wide still gets named. Off with `screensaverCaption`.
+- `screensaverStyle` (`auto`, `depth`, `color`, `mono`; default `auto`), panel
+  controls for style, caption and parallax, and `bing-wallpaper parallax
+  [--step | --reset]`.
+
+### Changed
+
+- The screensaver is re-rendered when any screensaver setting changes, not
+  only the size, and takes the fresh title and place when a new picture lands.
+- `state.json` gains `screensaverStyle`, `screensaverStyleSetting`,
+  `screensaverColor`, `screensaverCaption`, `screensaverParallax`,
+  `screensaverFrames` and `screensaverSums`; the panel's status line says which
+  style is actually on screen and why.
+
 ## [0.4.0] - 2026-09-03
 
 ### Added

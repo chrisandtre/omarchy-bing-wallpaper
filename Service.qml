@@ -68,6 +68,24 @@ Item {
     }
   }
 
+  // Drifts the screensaver's camera between ttfx effects; see
+  // `bing-wallpaper parallax`. The script blocks on Hyprland's event socket
+  // until a screensaver window opens, so keeping it alive costs nothing. If it
+  // ever dies it is brought back after a pause.
+  Process {
+    id: parallax
+    command: ["bash", root.script, "parallax"]
+    running: true
+    onExited: parallaxRestart.restart()
+  }
+
+  Timer {
+    id: parallaxRestart
+    interval: 30000
+    repeat: false
+    onTriggered: parallax.running = true
+  }
+
   // Let the shell finish coming up before the first run; theme application
   // restarts terminals and re-tints apps, which is rude mid-login.
   Timer {

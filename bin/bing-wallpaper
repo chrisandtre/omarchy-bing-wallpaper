@@ -15,6 +15,7 @@
 #   bing-wallpaper open [when]       Open the story behind a picture in the browser
 #   bing-wallpaper next              Print when the next Bing image is expected
 #   bing-wallpaper install-deps      Install ImageMagick (needed by the screensaver)
+#   bing-wallpaper parallax          Drift the screensaver between effects (run by the service)
 #
 # Settings are read from the plugin's inline entry in ~/.config/omarchy/shell.json
 # (see README). Every setting can also be overridden with an environment variable
@@ -55,6 +56,9 @@ declare -A DEFAULTS=(
   [resolution]="UHD"
   [screensaver]="true"
   [screensaverSize]="120x29"
+  [screensaverStyle]="auto"
+  [screensaverCaption]="true"
+  [screensaverParallax]="true"
 )
 
 log() { printf '%s\n' "$*" >&2; }
@@ -124,6 +128,9 @@ valid_setting_value() {
       [[ $value =~ ^([0-9]{2,3})x([0-9]{2,3})$ ]] &&
         (( BASH_REMATCH[1] >= 20 && BASH_REMATCH[1] <= 400 )) &&
         (( BASH_REMATCH[2] >= 8 && BASH_REMATCH[2] <= 100 )) ;;
+    screensaverStyle)    [[ $value =~ ^(auto|mono|color|depth)$ ]] ;;
+    screensaverCaption)  [[ $value =~ ^(true|false)$ ]] ;;
+    screensaverParallax) [[ $value =~ ^(true|false)$ ]] ;;
     *) return 1 ;;
   esac
 }
@@ -545,15 +552,64 @@ apply_theme_and_background() {
 # nothing to restart, and a screensaver that happens to be running picks the new
 # picture up on its next effect.
 #
+# Three styles. "mono" is a plain luminance ramp. "color" gives every cell the
+# photograph's own colour as a truecolor escape, which ttfx keeps when
+# omarchy-screensaver passes --existing-color-handling (see
+# screensaver_color_supported; without it the escapes are stripped and the art
+# degrades to plain glyphs). "depth" builds on colour with a cheap sense of
+# space: the horizon is found, distant ground fades toward the sky's haze, near
+# cells get heavier glyphs, and five frames shifted by depth are rendered so
+# `bing-wallpaper parallax` can drift the camera between effects.
+#
 # We deliberately do not use omarchy-transcode-ascii. It is a 1-bit hard
 # threshold built for logos, and a photograph through it comes out a solid
 # block. A luminance ramp keeps the tonal range a picture needs.
 
 SCREENSAVER_RAMP=' .:-=+*#%@'
+FRAMES_DIR="$STATE_DIR/frames"
+# Parallax shifts in cells, one frame each; the middle one is the picture as
+# shot. Nearby ground moves the full shift, the horizon barely moves.
+PARALLAX_SHIFTS="-3 -1.5 0 1.5 3"
+# The order the loop shows the frames in: out to one side, back through the
+# middle, out to the other side, and back. Index 0 is the unshifted frame.
+PARALLAX_ORDER=(2 3 4 3 2 1 0 1)
 
 screensaver_sum() {
   [[ -f $SCREENSAVER_FILE ]] || return 0
   cksum <"$SCREENSAVER_FILE" | awk '{ print $1 }'
+}
+
+# Colour only shows if omarchy-screensaver tells ttfx to keep the colours it
+# finds in the file. Stock Omarchy 4.0 does not (yet); "auto" falls back to
+# mono until it does.
+screensaver_color_supported() {
+  local script
+  script=$(command -v omarchy-screensaver 2>/dev/null) || return 1
+  grep -q -- '--existing-color-handling' "$script" 2>/dev/null
+}
+
+effective_screensaver_style() {
+  case "${SETTINGS[screensaverStyle]}" in
+    auto) if screensaver_color_supported; then echo depth; else echo mono; fi ;;
+    *) echo "${SETTINGS[screensaverStyle]}" ;;
+  esac
+}
+
+# The caption is the picture's title and place, centred under the art, so a
+# lighthouse the size of four cells still gets named. Bing's copyright reads
+# "Place, Country (© Photographer/Agency)"; the credit stays in the panel.
+# Prints nothing, or a blank line followed by up to two lines.
+screensaver_caption() {
+  local cols="$1" title="$2" copyright="$3" place line
+  [[ ${SETTINGS[screensaverCaption]} == true ]] || return 0
+  place=$(sed -E 's/[[:space:]]*\(©[^)]*\)[[:space:]]*$//' <<<"$copyright")
+  [[ -n $title || -n $place ]] || return 0
+  echo
+  for line in "$title" "$place"; do
+    [[ -n $line ]] || continue
+    (( ${#line} <= cols )) || line="${line:0:cols-1}…"
+    printf '%*s%s\n' $(( (cols - ${#line}) / 2 )) '' "$line"
+  done
 }
 
 # Render the image as a grid of ASCII characters chosen by brightness.
@@ -581,6 +637,128 @@ render_screensaver_art() {
       }'
 }
 
+# Render the colour styles: one frame per shift into $FRAMES_DIR/N.txt. Every
+# cell carries the photograph's colour as a truecolor escape (emitted only when
+# it changes, spaces carry none) and a glyph chosen by brightness. The picture
+# is sampled at twice the column count so parallax can move in half cells.
+#
+# The "depth" style adds the spatial cues. The horizon is the first row where
+# sky-like pixels (blue-dominant and light, or near-white) stop dominating.
+# Above it is far; below it depth runs from far at the horizon to near at the
+# bottom. Ground fades toward the sky's haze with distance, except for cells
+# whose colour is nothing like the haze (a red tower stays red), and near cells
+# get heavier glyphs. A picture with no plausible horizon (a close-up, a
+# ceiling) is rendered flat, which is the right answer for it.
+render_screensaver_frames() {
+  local image="$1" cols="$2" rows="$3" style="$4" shifts="$5"
+  magick "$image" -auto-orient -clahe 20x20%+128+1.5 -modulate 100,120 \
+    -resize "$(( cols * 2 ))x${rows}!" -depth 8 -compress none ppm:- 2>/dev/null |
+    awk -v ramp="$SCREENSAVER_RAMP" -v style="$style" -v shifts="$shifts" -v outdir="$FRAMES_DIR" '
+      function lum(r, g, b) { return (0.2126 * r + 0.7152 * g + 0.0722 * b) / maxval }
+      function depth(y,    t) {
+        if (style != "depth") return 0
+        if (y < horizon) return 0.75 + 0.25 * y / (horizon > 0 ? horizon : 1)
+        t = (y - horizon) / (height - 1 - horizon > 0 ? height - 1 - horizon : 1)
+        return 1 - t ^ 0.6
+      }
+      function abs(v) { return v < 0 ? -v : v }
+      NR == 1 { next }                       # P3 magic
+      /^#/ { next }
+      { for (i = 1; i <= NF; i++) token[++count] = $i }
+      END {
+        width = token[1]; height = token[2]; maxval = token[3]; offset = 4
+        levels = length(ramp)
+        if (width == "" || height == "" || maxval + 0 == 0) exit 1
+        cols = int(width / 2)
+
+        # How much of each row looks like sky.
+        for (y = 0; y < height; y++) {
+          sky = 0
+          for (x = 0; x < width; x++) {
+            i = offset + (y * width + x) * 3
+            r = token[i]; g = token[i + 1]; b = token[i + 2]
+            l = lum(r, g, b)
+            mx = r; if (g > mx) mx = g; if (b > mx) mx = b
+            mn = r; if (g < mn) mn = g; if (b < mn) mn = b
+            s = mx == 0 ? 0 : (mx - mn) / mx
+            if ((b >= g && g >= r - 10 && l > 0.35) || (l > 0.8 && s < 0.25)) sky++
+          }
+          frac[y] = sky / width
+        }
+        frac[height] = 0; frac[height + 1] = 0
+
+        horizon = -1
+        if (style == "depth")
+          for (y = 0; y < height; y++)
+            if (frac[y] < 0.35 && frac[y + 1] < 0.5 && frac[y + 2] < 0.5) { horizon = y; break }
+        has_horizon = (horizon > 0.15 * height && horizon < 0.85 * height)
+        if (!has_horizon) horizon = int(height / 2)
+
+        # Haze: the mean colour of the sky just above the horizon.
+        hr = hg = hb = n = 0
+        for (y = (horizon > 3 ? horizon - 3 : 0); y < (horizon > 0 ? horizon : 1); y++)
+          for (x = 0; x < width; x++) {
+            i = offset + (y * width + x) * 3
+            hr += token[i]; hg += token[i + 1]; hb += token[i + 2]; n++
+          }
+        hr /= n; hg /= n; hb /= n
+
+        nshifts = split(shifts, shift, " ")
+        for (f = 1; f <= nshifts; f++) {
+          file = outdir "/" (f - 1) ".txt"
+          for (y = 0; y < height; y++) {
+            d = depth(y)
+            dx = shift[f] * 2 * (1 - d)
+            dx = int(dx + (dx >= 0 ? 0.5 : -0.5))
+            line = ""; last = ""
+            for (x = 0; x < cols; x++) {
+              sx = 2 * x + dx
+              if (sx < 0) sx = 0
+              if (sx >= width) sx = width - 1
+              i = offset + (y * width + sx) * 3
+              r = token[i]; g = token[i + 1]; b = token[i + 2]
+              if (has_horizon && y >= horizon) {
+                dist = (abs(r - hr) + abs(g - hg) + abs(b - hb)) / (3 * maxval)
+                k = d - 0.4; if (k < 0) k = 0
+                k = 0.45 * k / 0.6 * (1 - (dist * 2.5 > 1 ? 1 : dist * 2.5))
+                r = r * (1 - k) + hr * k; g = g * (1 - k) + hg * k; b = b * (1 - k) + hb * k
+              }
+              l = 0.2 + 0.8 * lum(r, g, b)
+              w = style == "depth" ? 0.75 + 0.25 * (1 - d) : 1
+              idx = int(l * w * (levels - 1) + 0.5)
+              if (idx > levels - 1) idx = levels - 1
+              ch = substr(ramp, idx + 1, 1)
+              if (ch == " ") { line = line " "; continue }
+              col = sprintf("%d;%d;%d", r, g, b)
+              if (col != last) { line = line "\033[38;2;" col "m"; last = col }
+              line = line ch
+            }
+            print line "\033[0m" > file
+          }
+          close(file)
+        }
+      }'
+}
+
+# Copy frame N into place. The file is replaced atomically so a ttfx starting
+# mid-write never reads half a picture.
+screensaver_put_frame() {
+  local frame="$FRAMES_DIR/$1.txt" tmp
+  [[ -s $frame ]] || return 1
+  tmp=$(mktemp "$SCREENSAVER_FILE.XXXXXX") || return 1
+  cp "$frame" "$tmp" && mv "$tmp" "$SCREENSAVER_FILE" || { rm -f "$tmp"; return 1; }
+}
+
+# True when the file on disk is one of ours (any frame), so we know it is safe
+# to overwrite or restore. A file the user has edited since is theirs.
+screensaver_file_is_ours() {
+  local current
+  current=$(screensaver_sum)
+  [[ -n $current ]] || return 1
+  [[ " $(state_get screensaverSums) " == *" $current "* ]] ||
+    [[ $current == "$(state_get screensaverSum)" ]]
+}
+
 # Terminal cells are roughly 2.3x taller than they are wide, so a 16:9 picture
 # needs about four times as many columns as rows to look square on screen. The
 # 120x29 default is close to that ratio and still fits the smallest canvas we
@@ -588,19 +766,40 @@ render_screensaver_art() {
 # about 133x32 cells. There is no per-monitor sizing here on purpose: ttfx
 # centres the art without scaling it, and Omarchy's own logo is a fixed 79x28
 # on every display, so one fixed size is native behaviour rather than a
-# compromise.
+# compromise. The caption, when on, comes out of the same budget so the whole
+# thing still fits.
 #
 # Returns 2 when ImageMagick is missing, 1 when the render fails.
 screensaver_write() {
-  local image="$1" size="${SETTINGS[screensaverSize]}" cols rows art tmp
+  local image="$1" style="$2" title="$3" copyright="$4"
+  local size="${SETTINGS[screensaverSize]}" cols rows caption caption_rows=0 art_rows
+  local shifts="0" frames=0 frame sums=""
   command -v magick >/dev/null 2>&1 || return 2
   cols="${size%x*}"
   rows="${size#*x}"
 
-  art=$(render_screensaver_art "$image" "$cols" "$rows") || return 1
-  [[ -n $art ]] || return 1
+  caption=$(screensaver_caption "$cols" "$title" "$copyright")
+  [[ -z $caption ]] || caption_rows=$(printf '%s\n' "$caption" | wc -l)
+  art_rows=$(( rows - caption_rows ))
+  (( art_rows >= 5 )) || { art_rows=$rows; caption=""; }
+
+  [[ $style == depth && ${SETTINGS[screensaverParallax]} == true ]] && shifts="$PARALLAX_SHIFTS"
 
   mkdir -p "$BRANDING_DIR" "$STATE_DIR"
+  rm -rf "$FRAMES_DIR"
+  mkdir -p "$FRAMES_DIR" || return 1
+  if [[ $style == mono ]]; then
+    render_screensaver_art "$image" "$cols" "$art_rows" >"$FRAMES_DIR/0.txt" || return 1
+  else
+    render_screensaver_frames "$image" "$cols" "$art_rows" "$style" "$shifts" || return 1
+  fi
+  for frame in "$FRAMES_DIR"/[0-9].txt; do
+    [[ -s $frame ]] || return 1
+    [[ -z $caption ]] || printf '%s\n' "$caption" >>"$frame"
+    (( frames++ ))
+  done
+  (( frames > 0 )) || return 1
+
   # branding/screensaver.txt belongs to the user -- `omarchy branding
   # screensaver` writes it too. Keep one copy of whatever was there before we
   # first touched it so the toggle is reversible.
@@ -608,29 +807,37 @@ screensaver_write() {
     cp "$SCREENSAVER_FILE" "$SCREENSAVER_BACKUP"
   fi
 
-  tmp=$(mktemp "$SCREENSAVER_FILE.XXXXXX") || return 1
-  printf '%s\n' "$art" >"$tmp"
-  mv "$tmp" "$SCREENSAVER_FILE" || { rm -f "$tmp"; return 1; }
-  write_state screensaverSum="$(screensaver_sum)"
+  for frame in "$FRAMES_DIR"/[0-9].txt; do
+    sums+="$(cksum <"$frame" | awk '{ print $1 }') "
+  done
+  screensaver_put_frame "$(( (frames - 1) / 2 ))" || return 1
+  echo 0 >"$FRAMES_DIR/position"
+  write_state screensaverSum="$(screensaver_sum)" screensaverSums="${sums% }" screensaverFrames="$frames"
 }
 
-# Put the user's own art back -- but only if the file on disk is still the one
-# we wrote. If they have edited it since, it is theirs and we leave it alone.
+# Put the user's own art back -- but only if the file on disk is still one we
+# wrote. If they have edited it since, it is theirs and we leave it alone.
 screensaver_restore() {
   [[ -f $SCREENSAVER_BACKUP ]] || return 0
-  local recorded current
-  recorded=$(state_get screensaverSum)
-  current=$(screensaver_sum)
-  [[ -n $current && $current == "$recorded" ]] || return 0
+  screensaver_file_is_ours || return 0
   cp "$SCREENSAVER_BACKUP" "$SCREENSAVER_FILE" || return 1
   rm -f "$SCREENSAVER_BACKUP"
-  write_state screensaverSum=""
+  rm -rf "$FRAMES_DIR"
+  write_state screensaverSum="" screensaverSums="" screensaverFrames=0
 }
 
-# Bring the screensaver in line with the current setting, using the picture we
-# already have. Called after a fetch and after the toggle changes.
+# The settings that change what the art looks like, as one string, so a change
+# to any of them re-renders.
+screensaver_signature() {
+  echo "${SETTINGS[screensaverSize]} ${SETTINGS[screensaverStyle]} ${SETTINGS[screensaverCaption]} ${SETTINGS[screensaverParallax]}"
+}
+
+# Bring the screensaver in line with the current settings, using the picture we
+# already have. Called after a fetch and after a setting changes. Title and
+# copyright default to the state's, which is right except in the moment a new
+# picture lands, when the caller has fresher ones.
 sync_screensaver() {
-  local image="$1" status
+  local image="$1" title="${2-$(state_get title)}" copyright="${3-$(state_get copyright)}" style status color=false
 
   if [[ ${SETTINGS[screensaver]} != true ]]; then
     screensaver_restore
@@ -643,7 +850,9 @@ sync_screensaver() {
     return 0
   fi
 
-  screensaver_write "$image"
+  style=$(effective_screensaver_style)
+  screensaver_color_supported && color=true
+  screensaver_write "$image" "$style" "$title" "$copyright"
   case $? in
     0) status="applied" ;;
     2) status="magick-missing"
@@ -651,7 +860,103 @@ sync_screensaver() {
     *) status="failed" ;;
   esac
   write_state screensaverOn=true screensaver="$status" \
-    screensaverSize="${SETTINGS[screensaverSize]}"
+    screensaverSignature="$(screensaver_signature)" screensaverStyle="$style" \
+    screensaverStyleSetting="${SETTINGS[screensaverStyle]}" screensaverColor="$color" \
+    screensaverCaption="${SETTINGS[screensaverCaption]}" screensaverParallax="${SETTINGS[screensaverParallax]}"
+}
+
+# ----------------------------------------------------------------- parallax
+
+# `bing-wallpaper parallax` is a small daemon the service keeps running. It
+# idles until the screensaver opens, then every time omarchy-screensaver starts
+# a new ttfx effect it swaps the next parallax frame into screensaver.txt, so
+# each effect dissolves into a picture whose camera has drifted a little. ttfx
+# reads the file once at start-up, which is why the swap happens right after an
+# effect begins: it is the *next* effect that shows the new frame.
+
+# omarchy-launch-screensaver starts the terminal with --class=org.omarchy.screensaver
+# (--app-id= for foot); matching that argument, rather than the bare name, keeps
+# an editor with a file of that name open from counting as a screensaver.
+screensaver_running() {
+  pgrep -f -- '(--class|--app-id)=org\.omarchy\.screensaver' >/dev/null 2>&1
+}
+
+# Block until a screensaver window exists. Hyprland's event socket gives us that
+# for free; without it (or if the stream drops) fall back to a slow poll.
+wait_for_screensaver() {
+  screensaver_running && return 0
+  local sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hypr/${HYPRLAND_INSTANCE_SIGNATURE:-}/.socket2.sock" line fd pid
+  if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} && -S $sock ]] && command -v socat >/dev/null 2>&1; then
+    exec {fd}< <(socat -U - "UNIX-CONNECT:$sock" 2>/dev/null)
+    pid=$!
+    while IFS= read -r -u "$fd" line; do
+      if [[ $line == openwindow\>\>*,org.omarchy.screensaver,* ]]; then
+        exec {fd}<&-
+        kill "$pid" 2>/dev/null
+        return 0
+      fi
+    done
+    exec {fd}<&-
+    kill "$pid" 2>/dev/null
+  fi
+  until screensaver_running; do sleep 5; done
+}
+
+# Show the next frame in PARALLAX_ORDER. Does nothing when there is only one
+# frame, or when the file on disk is no longer ours.
+parallax_advance() {
+  local frames position
+  frames=$(state_get screensaverFrames)
+  [[ $frames =~ ^[0-9]+$ ]] && (( frames > 1 )) || return 1
+  screensaver_file_is_ours || return 1
+  position=$(cat "$FRAMES_DIR/position" 2>/dev/null)
+  [[ $position =~ ^[0-9]+$ ]] || position=0
+  position=$(( (position + 1) % ${#PARALLAX_ORDER[@]} ))
+  screensaver_put_frame "${PARALLAX_ORDER[position]}" && echo "$position" >"$FRAMES_DIR/position"
+}
+
+# Back to the unshifted frame, so the next time the screensaver starts it
+# starts centred.
+parallax_reset() {
+  [[ $(cat "$FRAMES_DIR/position" 2>/dev/null) == 0 ]] && return 0
+  screensaver_file_is_ours || return 0
+  screensaver_put_frame "${PARALLAX_ORDER[0]}" && echo 0 >"$FRAMES_DIR/position"
+}
+
+cmd_parallax() {
+  case "${1:-}" in
+    --step) parallax_advance; return ;;
+    --reset) parallax_reset; return ;;
+    "") ;;
+    *) fail "usage: bing-wallpaper parallax [--step | --reset]" ;;
+  esac
+
+  exec 8>"${LOCK_FILE%.lock}-parallax.lock"
+  flock -n 8 || { log "another parallax loop is running"; return 0; }
+
+  local pids seen last_advance
+  while true; do
+    wait_for_screensaver
+    load_settings
+    seen="" last_advance=0
+    while screensaver_running; do
+      if [[ ${SETTINGS[screensaver]} == true && ${SETTINGS[screensaverParallax]} == true ]]; then
+        pids=$(pgrep -x ttfx 2>/dev/null | sort | tr '\n' ' ')
+        # A new ttfx means a new effect has begun and has already read the
+        # file; give the next one the next frame. Several monitors start their
+        # effects within a moment of each other, hence the two-second hold.
+        if [[ -n $pids && $pids != "$seen" ]]; then
+          seen="$pids"
+          if (( SECONDS - last_advance >= 2 )); then
+            parallax_advance || true
+            last_advance=$SECONDS
+          fi
+        fi
+      fi
+      sleep 0.5
+    done
+    parallax_reset || true
+  done
 }
 
 notify() {
@@ -680,7 +985,7 @@ cmd_fetch() {
         ;;
       --market) SETTINGS[market]="$2"; shift ;;
       --mode) SETTINGS[mode]="$2"; shift ;;
-      -h | --help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
+      -h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) fail "unknown fetch option: $1" ;;
     esac
     shift
@@ -698,7 +1003,7 @@ cmd_fetch() {
   # toggle can be honoured right now -- it must not wait on the fetch schedule.
   if [[ $(state_get screensaverOn) != "${SETTINGS[screensaver]}" ]] ||
      [[ ${SETTINGS[screensaver]} == true &&
-        $(state_get screensaverSize) != "${SETTINGS[screensaverSize]}" ]]; then
+        $(state_get screensaverSignature) != "$(screensaver_signature)" ]]; then
     sync_screensaver "$(state_get image)"
   fi
 
@@ -798,11 +1103,6 @@ cmd_fetch() {
     fi
   fi
 
-  # A new picture needs new art. Toggle and size changes were handled above.
-  if (( changed )) && [[ ${SETTINGS[screensaver]} == true ]]; then
-    sync_screensaver "$image"
-  fi
-
   write_state \
     status=ok error="" \
     imageId="$image_id" image="$image" date="$date_fmt" market="$market" day="$day" \
@@ -810,6 +1110,11 @@ cmd_fetch() {
     mode="$mode" modeSetting="${SETTINGS[mode]}" extractMode="${SETTINGS[extractMode]}" \
     applyTheme="${SETTINGS[applyTheme]}" theme="$theme_status" resolution="$resolution" \
     nextCheck="$next_check" nextImage="$next_image" updatedAt="$(now_iso)"
+
+  # A new picture needs new art. Setting changes were handled above.
+  if (( changed )) && [[ ${SETTINGS[screensaver]} == true ]]; then
+    sync_screensaver "$image" "$title" "$copyright"
+  fi
 
   if (( changed )) && [[ $(state_get lastNotifiedId) != "$image_id" ]]; then
     notify "Bing: $title" -t 4000
@@ -886,7 +1191,7 @@ main() {
       [[ $# -eq 2 ]] || fail "usage: bing-wallpaper set <key> <value>"
       set_setting "$1" "$2"
       # The screensaver toggle should take effect now, not at tomorrow's fetch.
-      if [[ $1 == screensaver || $1 == screensaverSize ]]; then
+      if [[ $1 == screensaver* ]]; then
         load_settings
         sync_screensaver "$(state_get image)"
       fi
@@ -894,8 +1199,9 @@ main() {
     open) cmd_open "$@" ;;
     next) cmd_next ;;
     install-deps) cmd_install_deps ;;
-    -h | --help | help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|next|install-deps)" ;;
+    parallax) cmd_parallax "$@" ;;
+    -h | --help | help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|next|install-deps|parallax)" ;;
   esac
 }
 

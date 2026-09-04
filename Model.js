@@ -46,6 +46,15 @@ var EXTRACT_MODES = [
 // hold that ratio. "Medium" is the default because it still fits the smallest
 // canvas worth planning for -- a 1080p screen at the screensaver's font size
 // is about 133x32 cells.
+// "auto" is colour with depth wherever Omarchy's screensaver keeps colour, and
+// plain glyphs where it does not (see README, "Colour").
+var SCREENSAVER_STYLES = [
+  { value: "auto", label: "Auto" },
+  { value: "depth", label: "Colour with depth" },
+  { value: "color", label: "Colour" },
+  { value: "mono", label: "Plain glyphs" }
+]
+
 var SCREENSAVER_SIZES = [
   { value: "80x20", label: "Small" },
   { value: "120x29", label: "Medium" },
@@ -131,8 +140,19 @@ function screensaverLine(state) {
   if (status === "magick-missing")
     return "Screensaver needs ImageMagick — run: bing-wallpaper install-deps"
   if (status === "failed") return "Screensaver art could not be rendered"
-  if (status === "applied") return "Screensaver shows today's picture"
-  return ""
+  if (status !== "applied") return ""
+  var style = String(state.screensaverStyle || "mono")
+  var wanted = String(state.screensaverStyleSetting || "auto")
+  var color = state.screensaverColor === true || state.screensaverColor === "true"
+  var parallax = state.screensaverParallax === true || state.screensaverParallax === "true"
+  if (style === "mono" && wanted === "auto" && !color)
+    return "Screensaver shows today's picture in plain glyphs; colour needs Omarchy's ttfx colour flag (see README)"
+  if (style !== "mono" && !color)
+    return "Screensaver art is in colour, but this Omarchy strips colour (see README)"
+  if (style === "depth")
+    return "Screensaver shows today's picture in colour with depth" + (parallax ? ", drifting between effects" : "")
+  if (style === "color") return "Screensaver shows today's picture in colour"
+  return "Screensaver shows today's picture"
 }
 
 // The chips drawn under a picture to preview its theme: the background with
