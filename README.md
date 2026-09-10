@@ -63,8 +63,9 @@ link Bing supplies is only opened if it is an https URL on bing.com. The plugin
 writes to `~/.config/omarchy/themes/bing/`, `~/.local/state/bing-wallpaper/`,
 `~/.config/omarchy/branding/screensaver.txt` (only with the screensaver on, and
 your original is kept and restored) and its own entry in
-`~/.config/omarchy/shell.json`. Nothing needs sudo; `install-deps` runs
-`omarchy-pkg-add imagemagick` and is the only step that asks for a password.
+`~/.config/omarchy/shell.json`. Nothing the plugin does on its own needs elevated
+rights; `install-deps` runs `omarchy-pkg-add imagemagick` and is the only step
+that asks for a password.
 
 ## How is this different from the other Bing plugins?
 
