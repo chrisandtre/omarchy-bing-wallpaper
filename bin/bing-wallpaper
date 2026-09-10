@@ -42,6 +42,13 @@ LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bing-wallpaper.lock"
 BING_HOST="https://www.bing.com"
 # Bing's archive API serves at most the last eight pictures (idx 0..7).
 BING_ARCHIVE_MAX=8
+# Ceilings on what we accept from the network. The metadata for a week is a
+# few KB; a UHD JPEG from Bing is 1-6 MB. Anything past these is not a Bing
+# response we want, whatever it is, and is cut off at the producer before jq,
+# file, ImageMagick, Aether or the panel ever see it.
+BING_META_MAX_BYTES=262144        # 256 KiB
+BING_IMAGE_MAX_BYTES=26214400     # 25 MiB per picture
+BING_STORE_MAX_BYTES=419430400    # 400 MiB for the whole backgrounds folder
 
 # Setting name -> default. Keep in sync with README.md and Model.js.
 declare -A DEFAULTS=(
@@ -238,11 +245,50 @@ next_mode_flip() {
 
 # The last BING_ARCHIVE_MAX pictures for a market, newest first, as a JSON
 # array. One call covers today's image and the week behind it.
+# Fetch a URL into $2 with a hard byte ceiling $3. head(1) is the producer
+# limit: it stops reading at ceiling+1 bytes no matter what the server sends or
+# whether it announced a length, and the transfer is then rejected as
+# oversized. curl's --max-filesize additionally refuses up front when a length
+# is announced. Nothing downstream sees a byte of an oversized response.
+fetch_bounded() {
+  local url="$1" dest="$2" max="$3" size
+  curl -fsSL --max-time "${4:-60}" --max-filesize "$max" --proto '=https' "$url" 2>/dev/null |
+    head -c "$(( max + 1 ))" >"$dest"
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || { rm -f "$dest"; return 1; }
+  size=$(stat -c %s "$dest" 2>/dev/null) || { rm -f "$dest"; return 1; }
+  if (( size > max )); then
+    log "rejected oversized response from $url (> $max bytes)"
+    rm -f "$dest"
+    return 1
+  fi
+  (( size > 0 ))
+}
+
 fetch_metadata() {
-  local market="$1"
-  curl -fsSL --max-time 20 \
-    "$BING_HOST/HPImageArchive.aspx?format=js&idx=0&n=$BING_ARCHIVE_MAX&mkt=$market" |
-    jq -c '.images // [] | map(select(type == "object"))'
+  local market="$1" tmp
+  tmp=$(mktemp) || return 1
+  if ! fetch_bounded "$BING_HOST/HPImageArchive.aspx?format=js&idx=0&n=$BING_ARCHIVE_MAX&mkt=$market" \
+       "$tmp" "$BING_META_MAX_BYTES" 20; then
+    rm -f "$tmp"
+    return 1
+  fi
+  # Only well-formed image records, and never more than we asked for.
+  jq -c --argjson n "$BING_ARCHIVE_MAX" \
+    '.images // [] | map(select(type == "object")) | .[:$n]' "$tmp" 2>/dev/null
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
+# The story link comes from Bing's metadata and ends up in a browser, so it is
+# only accepted as an https URL on bing.com itself: no other host, no
+# credentials, no explicit port, no other scheme, nothing unprintable. Anything
+# else becomes "" and the panel simply shows no story button.
+sanitize_link() {
+  local link="$1"
+  [[ $link =~ ^https://(www\.)?bing\.com(/[[:graph:]]*)?$ ]] || { echo ""; return; }
+  [[ ${link%%/*} != *@* ]] || { echo ""; return; }
+  echo "$link"
 }
 
 # Derive the pieces we name files and state after from one Bing image record.
@@ -255,7 +301,7 @@ parse_image_meta() {
   META_URLBASE=$(jq -r '.urlbase // ""' <<<"$meta")
   META_TITLE=$(jq -r '.title // ""' <<<"$meta")
   META_COPYRIGHT=$(jq -r '.copyright // ""' <<<"$meta")
-  META_LINK=$(jq -r '.copyrightlink // ""' <<<"$meta")
+  META_LINK=$(sanitize_link "$(jq -r '.copyrightlink // "" | if type == "string" then . else "" end' <<<"$meta")")
   # "/th?id=OHR.AZWilderness_EN-US4070936347" -> "AZWilderness"
   META_NAME=$(sed -E 's/.*id=OHR\.([A-Za-z0-9]+)_.*/\1/' <<<"$META_URLBASE")
   [[ -n $META_NAME && $META_NAME != "$META_URLBASE" ]] || META_NAME="bing"
@@ -276,12 +322,25 @@ next_image_epoch() {
   echo $(( start + 86400 ))
 }
 
+# Bytes currently held in the backgrounds folder.
+backgrounds_bytes() {
+  du -sb "$BACKGROUNDS_DIR" 2>/dev/null | awk '{ print $1 + 0 }'
+}
+
 download_image() {
-  local urlbase="$1" dest="$2" res tmp
+  local urlbase="$1" dest="$2" res tmp used
+  # urlbase is a path fragment from the metadata; only the shape Bing uses.
+  [[ $urlbase =~ ^/th\?id=OHR\.[A-Za-z0-9_.-]+$ ]] || return 1
+  # Keep the whole store bounded even if every picture were the maximum size.
+  used=$(backgrounds_bytes)
+  if (( ${used:-0} + BING_IMAGE_MAX_BYTES > BING_STORE_MAX_BYTES )); then
+    log "backgrounds folder is at its size limit; not downloading"
+    return 1
+  fi
   tmp="$dest.part"
   for res in "${SETTINGS[resolution]}" 1920x1200 1920x1080; do
-    if curl -fsSL --max-time 120 -o "$tmp" "$BING_HOST${urlbase}_${res}.jpg" &&
-       [[ -s $tmp ]] && file -b --mime-type "$tmp" | grep -q '^image/'; then
+    if fetch_bounded "$BING_HOST${urlbase}_${res}.jpg" "$tmp" "$BING_IMAGE_MAX_BYTES" 120 &&
+       file -b --mime-type "$tmp" | grep -q '^image/'; then
       mv "$tmp" "$dest"
       echo "$res"
       return 0
@@ -1150,6 +1209,7 @@ cmd_open() {
   else
     link=$(state_get link)
   fi
+  link=$(sanitize_link "$link")
   [[ -n $link ]] || fail "no story link yet; run fetch first"
   if command -v omarchy-launch-browser >/dev/null 2>&1; then
     setsid omarchy-launch-browser "$link" >/dev/null 2>&1 &

@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] - 2026-09-10
+
+### Security
+
+- Every network response now has a hard byte ceiling enforced at the producer:
+  256 KiB for the metadata call, 25 MiB per picture, and the backgrounds folder
+  as a whole is capped at 400 MiB. An oversized or endless response is cut off
+  and discarded before `jq`, `file`, ImageMagick, Aether or the panel see any
+  of it. Downloads are https-only, and the image path from the metadata must
+  have the shape Bing uses.
+- The story link from Bing's metadata is accepted only as an https URL on
+  bing.com with no credentials or explicit port. It is checked before it is
+  stored, again before `bing-wallpaper open` launches a browser, and once more
+  in the panel and bar widget. Anything else shows no story button.
+
 ## [0.5.2] - 2026-09-04
 
 ### Changed

@@ -53,8 +53,9 @@ BarWidget {
   }
 
   function openLink(link) {
+    link = Model.safeLink(link)
     if (!link) return
-    Util.execArgv(["omarchy-launch-browser", String(link)])
+    Util.execArgv(["omarchy-launch-browser", link])
   }
 
   function openStory() {

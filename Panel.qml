@@ -102,9 +102,10 @@ Panel {
 
   // Opens the story behind whichever picture the hero is showing.
   function openStory() {
-    if (!shown.link) return
-    if (hostWidget && typeof hostWidget.openLink === "function") hostWidget.openLink(shown.link)
-    else Util.execArgv(["omarchy-launch-browser", String(shown.link)])
+    var link = Model.safeLink(shown.link)
+    if (!link) return
+    if (hostWidget && typeof hostWidget.openLink === "function") hostWidget.openLink(link)
+    else Util.execArgv(["omarchy-launch-browser", link])
   }
 
   function applyPreview() {

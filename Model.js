@@ -62,6 +62,13 @@ var SCREENSAVER_SIZES = [
   { value: "200x48", label: "Extra large" }
 ]
 
+// The story link is validated by bin/bing-wallpaper before it reaches state,
+// and again here before it reaches a browser: https, bing.com, nothing else.
+function safeLink(link) {
+  var s = String(link || "")
+  return /^https:\/\/(www\.)?bing\.com(\/[\x21-\x7e]*)?$/.test(s) && s.split("/")[2].indexOf("@") < 0 ? s : ""
+}
+
 function parseState(text) {
   try {
     var parsed = JSON.parse(String(text || ""))
@@ -188,7 +195,7 @@ function currentEntry(state) {
   if (!state || !state.imageId) return null
   return {
     id: state.imageId, date: state.date || "", title: state.title || "",
-    copyright: state.copyright || "", link: state.link || "", image: state.image || "",
+    copyright: state.copyright || "", link: safeLink(state.link), image: state.image || "",
     market: state.market || "", colors: null
   }
 }
