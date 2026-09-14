@@ -87,8 +87,15 @@ Panel {
     return false
   }
 
+  // Third-party plugins are handed PluginBarApi as `bar`, where
+  // centerHoverRevealSuppressed is readonly; only the first-party Bar object
+  // exposes it as a writable property. Assigning to it threw, which aborted
+  // close() before controller.hide() and left the panel's layer surface
+  // mapped and grabbing input. Go through the setter both APIs provide.
   function setCenterHoverRevealSuppressed(value) {
-    if (root.bar && "centerHoverRevealSuppressed" in root.bar)
+    if (root.bar && typeof root.bar.setCenterHoverRevealSuppressed === "function")
+      root.bar.setCenterHoverRevealSuppressed(value)
+    else if (root.bar && "centerHoverRevealSuppressed" in root.bar)
       root.bar.centerHoverRevealSuppressed = value
   }
 

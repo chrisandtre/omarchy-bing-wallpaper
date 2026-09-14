@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.4] - 2026-09-14
+
+### Fixed
+
+- The detail panel could not be closed, and held the pointer and keyboard
+  hostage until the shell was restarted. Omarchy hands third-party plugins
+  `PluginBarApi` as their `bar`, where `centerHoverRevealSuppressed` is
+  readonly, so assigning to it threw and aborted `close()` before the panel
+  state was cleared — leaving the panel's full-screen layer surface mapped and
+  swallowing every click. The suppression now goes through
+  `setCenterHoverRevealSuppressed()`, which both the plugin and first-party bar
+  APIs provide.
+
 ## [0.5.3] - 2026-09-10
 
 ### Security
