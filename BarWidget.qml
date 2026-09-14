@@ -19,6 +19,11 @@ BarWidget {
 
   readonly property string script: String(Qt.resolvedUrl("bin/bing-wallpaper")).replace(/^file:\/\//, "")
 
+  // Absolute interpreter, explicit environment, `timeout` owning the process
+  // group. Used for the fallbacks below, which run when the bar widget is
+  // mounted without the plugin's service.
+  readonly property Exec exec: Exec {}
+
   readonly property bool showTitle: setting("showTitle", true)
   readonly property int maxTitleChars: Number(setting("maxTitleChars", 28))
   readonly property string stateHome: {
@@ -41,7 +46,7 @@ BarWidget {
   function refresh() {
     var s = service()
     if (s && typeof s.fetch === "function") s.fetch(true)
-    else Util.execArgv(["bash", root.script, "fetch", "--force"])
+    else exec.detached(root.script, exec.jobDeadline, ["fetch", "--force"])
   }
 
   // Switch to an archived picture (a date, an archive id, or N days ago).
@@ -49,17 +54,24 @@ BarWidget {
     if (when === undefined || when === null || String(when) === "") return
     var s = service()
     if (s && typeof s.apply === "function") s.apply(String(when))
-    else Util.execArgv(["bash", root.script, "apply", String(when)])
+    else exec.detached(root.script, exec.jobDeadline, ["apply", String(when)])
   }
 
-  function openLink(link) {
-    link = Model.safeLink(link)
-    if (!link) return
-    Util.execArgv(["omarchy-launch-browser", link])
+  // The story is opened by `bing-wallpaper open [when]`, never from here: that
+  // is where the link is re-checked against the bing.com allowlist before it
+  // reaches a browser. `when` is an archive date; empty means today's picture.
+  function openStory(when) {
+    var key = when === undefined || when === null ? "" : String(when)
+    var s = service()
+    if (s && typeof s.openStory === "function") s.openStory(key)
+    else exec.detached(root.script, exec.actionDeadline, key === "" ? ["open"] : ["open", key])
   }
 
-  function openStory() {
-    if (state && state.link) openLink(state.link)
+  // The panel's Wallpapers button.
+  function openBackgrounds() {
+    var s = service()
+    if (s && typeof s.openBackgrounds === "function") s.openBackgrounds()
+    else exec.detached(root.script, exec.actionDeadline, ["backgrounds"])
   }
 
   // Persist one setting onto this widget's inline shell.json entry, the way
@@ -165,7 +177,7 @@ BarWidget {
     verticalPadding: 8.75
 
     onPressed: function(b) {
-      if (b === Qt.RightButton) root.openStory()
+      if (b === Qt.RightButton) root.openStory("")
       else if (b === Qt.MiddleButton) root.refresh()
       else root.togglePanel()
     }

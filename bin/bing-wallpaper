@@ -13,6 +13,7 @@
 #   bing-wallpaper settings          Print the effective settings as JSON
 #   bing-wallpaper set <key> <val>   Update one setting inline in shell.json
 #   bing-wallpaper open [when]       Open the story behind a picture in the browser
+#   bing-wallpaper backgrounds       Open the generated backgrounds folder
 #   bing-wallpaper next              Print when the next Bing image is expected
 #   bing-wallpaper install-deps      Install ImageMagick (needed by the screensaver)
 #   bing-wallpaper parallax          Drift the screensaver between effects (run by the service)
@@ -22,6 +23,93 @@
 # of the form BING_WALLPAPER_<KEY>, e.g. BING_WALLPAPER_MARKET=de-DE.
 
 set -o pipefail
+
+# --------------------------------------------------------- execution boundary
+#
+# Nothing below is resolved through an inherited PATH. The service runs this
+# script unattended every fifteen minutes, so a writable directory sitting
+# early on somebody's PATH must not get to decide what `curl` or `jq` means.
+# PATH is pinned to trusted system directories before anything runs, the
+# command hash is dropped so no inherited entry survives, and the helpers that
+# consume remote bytes or move files into place are additionally resolved once
+# to an absolute path and called through it for the rest of the run.
+#
+# The service closes the same boundary from its side by launching this script
+# with a cleared environment (see Service.qml); pinning PATH here as well keeps
+# a hand-run from a hostile shell honest too.
+BING_TRUSTED_BIN_DIRS=(/usr/bin /bin /usr/share/omarchy/bin /usr/local/bin)
+PATH=$(IFS=:; printf '%s' "${BING_TRUSTED_BIN_DIRS[*]}")
+export PATH
+hash -r
+unset -v BASH_ENV CDPATH ENV GLOBIGNORE LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD
+IFS=$' \t\n'
+
+# Absolute path of <name> under a trusted directory, or failure. Never looks at
+# PATH, so it stays correct even if something later in the run changes it.
+resolve_tool() {
+  local name="$1" dir
+  case "$name" in ''|*/*) return 1 ;; esac
+  for dir in "${BING_TRUSTED_BIN_DIRS[@]}"; do
+    if [[ -f "$dir/$name" && -x "$dir/$name" ]]; then
+      printf '%s' "$dir/$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+CURL=$(resolve_tool curl) || CURL=""
+JQ=$(resolve_tool jq) || JQ=""
+FILE=$(resolve_tool file) || FILE=""
+HEAD=$(resolve_tool head) || HEAD=""
+STAT=$(resolve_tool stat) || STAT=""
+MV=$(resolve_tool mv) || MV=""
+AWK=$(resolve_tool awk) || AWK=""
+readonly CURL JQ FILE HEAD STAT MV AWK
+
+if [[ -z $JQ || -z $HEAD || -z $STAT || -z $MV ]]; then
+  printf 'bing-wallpaper: required tools are missing from %s\n' "${BING_TRUSTED_BIN_DIRS[*]}" >&2
+  exit 1
+fi
+
+# The service collects this script's stderr into a buffer that has no limit of
+# its own, so the ceiling belongs here, at the producer. Both streams go
+# through a limiter that keeps draining its pipe for the whole run and simply
+# stops forwarding past the ceiling -- draining rather than closing means a
+# chatty helper gets no SIGPIPE and still finishes normally. Only the
+# service-driven subcommands are capped; `status`, `archive` and `settings`
+# print structured output a caller is entitled to in full.
+BING_OUTPUT_MAX_BYTES=65536
+BING_OUTPUT_LIMITER='
+  {
+    n += length($0) + 1
+    if (n <= max) { print; fflush() }
+    else if (!cut) { print "bing-wallpaper: " tag " truncated at " max " bytes"; fflush(); cut = 1 }
+  }'
+
+bound_output() {
+  [[ -n $AWK ]] || return 0
+  exec 3>&1 4>&2
+  exec 1> >(exec "$AWK" -v max="$BING_OUTPUT_MAX_BYTES" -v tag=stdout "$BING_OUTPUT_LIMITER" >&3)
+  exec 2> >(exec "$AWK" -v max="$BING_OUTPUT_MAX_BYTES" -v tag=stderr "$BING_OUTPUT_LIMITER" >&4)
+}
+
+# Anything this script started belongs to this script. The service runs us
+# under `timeout`, which owns the process group and escalates TERM to KILL, but
+# a signal that arrives while we are between helpers should still take our own
+# background children (the socat reading Hyprland's event socket, a sleep) with
+# it rather than leaving them behind.
+BING_CHILD_PIDS=()
+bw_track_child() { [[ -n ${1:-} ]] && BING_CHILD_PIDS+=("$1"); }
+bw_terminate() {
+  local pid
+  trap - TERM INT HUP
+  for pid in "${BING_CHILD_PIDS[@]}"; do
+    [[ -n $pid ]] && kill -TERM "$pid" 2>/dev/null
+  done
+  exit 143
+}
+trap bw_terminate TERM INT HUP
 
 PLUGIN_ID="io.github.chrisandtre.bing-wallpaper"
 THEME_NAME="bing"
@@ -73,7 +161,7 @@ fail() { log "bing-wallpaper: $*"; exit 1; }
 
 need() {
   for tool in "$@"; do
-    command -v "$tool" >/dev/null 2>&1 || fail "$tool is required but not installed"
+    resolve_tool "$tool" >/dev/null || fail "$tool is required but not installed"
   done
 }
 
@@ -83,7 +171,7 @@ need() {
 # sections for a bar widget, or plugins[] for a headless install.
 setting_entry() {
   [[ -f $SHELL_JSON ]] || { echo '{}'; return; }
-  jq -c --arg id "$PLUGIN_ID" '
+  "$JQ" -c --arg id "$PLUGIN_ID" '
     [
       (.bar.layout // {} | .left // [], .center // [], .right // [] | .[]),
       (.plugins // [] | .[])
@@ -98,7 +186,7 @@ load_settings() {
   entry=$(setting_entry)
   declare -gA SETTINGS=()
   for key in "${!DEFAULTS[@]}"; do
-    value=$(jq -r --arg k "$key" '.[$k] // empty' <<<"$entry")
+    value=$("$JQ" -r --arg k "$key" '.[$k] // empty' <<<"$entry")
     env_key="BING_WALLPAPER_$(tr '[:lower:]' '[:upper:]' <<<"$key")"
     if [[ -n ${!env_key:-} ]]; then
       value="${!env_key}"
@@ -113,7 +201,7 @@ print_settings() {
   for key in $(printf '%s\n' "${!SETTINGS[@]}" | sort); do
     (( first )) || printf ','
     first=0
-    printf '"%s":%s' "$key" "$(jq -Rn --arg v "${SETTINGS[$key]}" '$v')"
+    printf '"%s":%s' "$key" "$("$JQ" -Rn --arg v "${SETTINGS[$key]}" '$v')"
   done
   printf '}\n'
 }
@@ -152,7 +240,7 @@ set_setting() {
 
   case "$value" in
     true | false) jq_value="$value" ;;
-    *) if [[ $value =~ ^[0-9]+$ ]]; then jq_value="$value"; else jq_value=$(jq -Rn --arg v "$value" '$v'); fi ;;
+    *) if [[ $value =~ ^[0-9]+$ ]]; then jq_value="$value"; else jq_value=$("$JQ" -Rn --arg v "$value" '$v'); fi ;;
   esac
 
   tmp=$(mktemp "$SHELL_JSON.XXXXXX")
@@ -163,7 +251,7 @@ set_setting() {
     | .bar.layout.right |= patch
     | .plugins |= patch
   ' "$SHELL_JSON" >"$tmp"; then
-    mv "$tmp" "$SHELL_JSON"
+    "$MV" "$tmp" "$SHELL_JSON"
   else
     rm -f "$tmp"
     fail "could not update $SHELL_JSON"
@@ -173,11 +261,11 @@ set_setting() {
 # ------------------------------------------------------------------- state
 
 read_state() {
-  [[ -f $STATE_FILE ]] && jq -c . "$STATE_FILE" 2>/dev/null || echo '{}'
+  [[ -f $STATE_FILE ]] && "$JQ" -c . "$STATE_FILE" 2>/dev/null || echo '{}'
 }
 
 state_get() {
-  read_state | jq -r --arg k "$1" '.[$k] // empty'
+  read_state | "$JQ" -r --arg k "$1" '.[$k] // empty'
 }
 
 # write_state key=value ... (values are JSON-encoded as strings unless they
@@ -201,7 +289,7 @@ write_state() {
   done
   local tmp
   tmp=$(mktemp "$STATE_DIR/state.XXXXXX")
-  read_state | jq "${args[@]}" "$filter" >"$tmp" && mv "$tmp" "$STATE_FILE"
+  read_state | "$JQ" "${args[@]}" "$filter" >"$tmp" && "$MV" "$tmp" "$STATE_FILE"
 }
 
 now_epoch() { date +%s; }
@@ -252,10 +340,10 @@ next_mode_flip() {
 # is announced. Nothing downstream sees a byte of an oversized response.
 fetch_bounded() {
   local url="$1" dest="$2" max="$3" size
-  curl -fsSL --max-time "${4:-60}" --max-filesize "$max" --proto '=https' "$url" 2>/dev/null |
-    head -c "$(( max + 1 ))" >"$dest"
+  "$CURL" -fsSL --max-time "${4:-60}" --max-filesize "$max" --proto '=https' "$url" 2>/dev/null |
+    "$HEAD" -c "$(( max + 1 ))" >"$dest"
   [[ ${PIPESTATUS[0]} -eq 0 ]] || { rm -f "$dest"; return 1; }
-  size=$(stat -c %s "$dest" 2>/dev/null) || { rm -f "$dest"; return 1; }
+  size=$("$STAT" -c %s "$dest" 2>/dev/null) || { rm -f "$dest"; return 1; }
   if (( size > max )); then
     log "rejected oversized response from $url (> $max bytes)"
     rm -f "$dest"
@@ -273,7 +361,7 @@ fetch_metadata() {
     return 1
   fi
   # Only well-formed image records, and never more than we asked for.
-  jq -c --argjson n "$BING_ARCHIVE_MAX" \
+  "$JQ" -c --argjson n "$BING_ARCHIVE_MAX" \
     '.images // [] | map(select(type == "object")) | .[:$n]' "$tmp" 2>/dev/null
   local rc=$?
   rm -f "$tmp"
@@ -296,12 +384,12 @@ sanitize_link() {
 #       META_LINK META_NAME META_DATE META_ID META_IMAGE
 parse_image_meta() {
   local meta="$1" market="$2"
-  META_STARTDATE=$(jq -r '.startdate // ""' <<<"$meta")
-  META_FULLSTART=$(jq -r '.fullstartdate // ""' <<<"$meta")
-  META_URLBASE=$(jq -r '.urlbase // ""' <<<"$meta")
-  META_TITLE=$(jq -r '.title // ""' <<<"$meta")
-  META_COPYRIGHT=$(jq -r '.copyright // ""' <<<"$meta")
-  META_LINK=$(sanitize_link "$(jq -r '.copyrightlink // "" | if type == "string" then . else "" end' <<<"$meta")")
+  META_STARTDATE=$("$JQ" -r '.startdate // ""' <<<"$meta")
+  META_FULLSTART=$("$JQ" -r '.fullstartdate // ""' <<<"$meta")
+  META_URLBASE=$("$JQ" -r '.urlbase // ""' <<<"$meta")
+  META_TITLE=$("$JQ" -r '.title // ""' <<<"$meta")
+  META_COPYRIGHT=$("$JQ" -r '.copyright // ""' <<<"$meta")
+  META_LINK=$(sanitize_link "$("$JQ" -r '.copyrightlink // "" | if type == "string" then . else "" end' <<<"$meta")")
   # "/th?id=OHR.AZWilderness_EN-US4070936347" -> "AZWilderness"
   META_NAME=$(sed -E 's/.*id=OHR\.([A-Za-z0-9]+)_.*/\1/' <<<"$META_URLBASE")
   [[ -n $META_NAME && $META_NAME != "$META_URLBASE" ]] || META_NAME="bing"
@@ -340,8 +428,8 @@ download_image() {
   tmp="$dest.part"
   for res in "${SETTINGS[resolution]}" 1920x1200 1920x1080; do
     if fetch_bounded "$BING_HOST${urlbase}_${res}.jpg" "$tmp" "$BING_IMAGE_MAX_BYTES" 120 &&
-       file -b --mime-type "$tmp" | grep -q '^image/'; then
-      mv "$tmp" "$dest"
+       "$FILE" -b --mime-type "$tmp" | grep -q '^image/'; then
+      "$MV" "$tmp" "$dest"
       echo "$res"
       return 0
     fi
@@ -380,11 +468,11 @@ archive_count() {
 }
 
 read_archive() {
-  [[ -f $ARCHIVE_FILE ]] && jq -c . "$ARCHIVE_FILE" 2>/dev/null || echo '{}'
+  [[ -f $ARCHIVE_FILE ]] && "$JQ" -c . "$ARCHIVE_FILE" 2>/dev/null || echo '{}'
 }
 
 archive_get() {
-  read_archive | jq -r --arg k "$1" '.[$k] // empty'
+  read_archive | "$JQ" -r --arg k "$1" '.[$k] // empty'
 }
 
 # Extract the palette Aether would build for an image, as a JSON object of
@@ -401,7 +489,7 @@ extract_palette() {
       /^[a-zA-Z0-9_]+[[:space:]]*=[[:space:]]*"#[0-9a-fA-F]{6}"/ {
         key = $0; sub(/[[:space:]]*=.*/, "", key); print key "\t" $2
       }' "$work/colors.toml" |
-      jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries'
+      "$JQ" -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries'
   else
     echo null
   fi
@@ -413,7 +501,7 @@ extract_palette() {
 archive_entry() {
   local meta="$1" market="$2" image="$3" colors="$4" day="$5"
   parse_image_meta "$meta" "$market"
-  jq -cn \
+  "$JQ" -cn \
     --arg id "$META_ID" --arg date "$META_DATE" --argjson day "$day" \
     --arg title "$META_TITLE" --arg copyright "$META_COPYRIGHT" --arg link "$META_LINK" \
     --arg image "$image" --arg market "$market" --argjson colors "$colors" \
@@ -427,12 +515,12 @@ write_archive() {
   local entries="$1" market="$2" mode="$3" extract_mode="$4" wanted="$5" status="$6" tmp
   mkdir -p "$STATE_DIR"
   tmp=$(mktemp "$STATE_DIR/archive.XXXXXX")
-  jq -n --arg market "$market" --arg mode "$mode" --arg extractMode "$extract_mode" \
+  "$JQ" -n --arg market "$market" --arg mode "$mode" --arg extractMode "$extract_mode" \
     --argjson wanted "$wanted" --arg status "$status" --arg updatedAt "$(now_iso)" \
     --argjson entries "$entries" \
     '{market: $market, mode: $mode, extractMode: $extractMode, wanted: $wanted,
       status: $status, updatedAt: $updatedAt, entries: $entries}' >"$tmp" &&
-    mv "$tmp" "$ARCHIVE_FILE"
+    "$MV" "$tmp" "$ARCHIVE_FILE"
 }
 
 # Bring the archive in line with the metadata we just fetched: download any
@@ -444,7 +532,7 @@ sync_archive() {
   local wanted total count i meta entries='[]' entry colors image missing=0 done=0
 
   wanted=$(archive_count)
-  total=$(jq 'length' <<<"$images")
+  total=$("$JQ" 'length' <<<"$images")
   count=$wanted
   (( count > total )) && count=$total
 
@@ -452,23 +540,23 @@ sync_archive() {
   # picture or a changed setting costs an Aether run.
   local previous='{}'
   if [[ $(archive_get mode) == "$mode" && $(archive_get extractMode) == "$extract_mode" ]]; then
-    previous=$(read_archive | jq -c '[.entries[]? | select(.colors != null) | {key: .id, value: .colors}] | from_entries')
+    previous=$(read_archive | "$JQ" -c '[.entries[]? | select(.colors != null) | {key: .id, value: .colors}] | from_entries')
   fi
 
   # Pass one: what we already have, so the panel can show placeholders for the
   # rest straight away.
   for (( i = 0; i < count; i++ )); do
-    meta=$(jq -c ".[$i]" <<<"$images")
+    meta=$("$JQ" -c ".[$i]" <<<"$images")
     parse_image_meta "$meta" "$market"
     if [[ -s $META_IMAGE ]]; then
-      colors=$(jq -c --arg id "$META_ID" '.[$id] // null' <<<"$previous")
+      colors=$("$JQ" -c --arg id "$META_ID" '.[$id] // null' <<<"$previous")
       [[ $colors != null ]] || colors=$(extract_palette "$META_IMAGE" "$mode" "$extract_mode")
       entry=$(archive_entry "$meta" "$market" "$META_IMAGE" "$colors" "$i")
     else
       (( missing++ ))
       entry=$(archive_entry "$meta" "$market" "" null "$i")
     fi
-    entries=$(jq -c --argjson e "$entry" '. + [$e]' <<<"$entries")
+    entries=$("$JQ" -c --argjson e "$entry" '. + [$e]' <<<"$entries")
   done
 
   if (( missing == 0 )); then
@@ -483,14 +571,14 @@ sync_archive() {
 
   # Pass two: fetch what is missing, newest first.
   for (( i = 0; i < count; i++ )); do
-    image=$(jq -r ".[$i].image // empty" <<<"$entries")
+    image=$("$JQ" -r ".[$i].image // empty" <<<"$entries")
     [[ -z $image ]] || continue
-    meta=$(jq -c ".[$i]" <<<"$images")
+    meta=$("$JQ" -c ".[$i]" <<<"$images")
     parse_image_meta "$meta" "$market"
     if download_image "$META_URLBASE" "$META_IMAGE" >/dev/null; then
       colors=$(extract_palette "$META_IMAGE" "$mode" "$extract_mode")
       entry=$(archive_entry "$meta" "$market" "$META_IMAGE" "$colors" "$i")
-      entries=$(jq -c --argjson i "$i" --argjson e "$entry" '.[$i] = $e' <<<"$entries")
+      entries=$("$JQ" -c --argjson i "$i" --argjson e "$entry" '.[$i] = $e' <<<"$entries")
     else
       log "could not download $META_URLBASE"
     fi
@@ -500,7 +588,7 @@ sync_archive() {
   done
 
   local still_missing
-  still_missing=$(jq '[.[] | select(.image == null)] | length' <<<"$entries")
+  still_missing=$("$JQ" '[.[] | select(.image == null)] | length' <<<"$entries")
   if (( still_missing > 0 )); then
     write_archive "$entries" "$market" "$mode" "$extract_mode" "$wanted" partial
     write_state archive=partial archiveProgress=""
@@ -517,9 +605,9 @@ archive_lookup_date() {
   if [[ $key =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
     echo "$key"
   elif [[ $key =~ ^[0-9]$ ]]; then
-    read_archive | jq -r --argjson d "$key" '.entries[]? | select(.day == $d) | .date' | head -1
+    read_archive | "$JQ" -r --argjson d "$key" '.entries[]? | select(.day == $d) | .date' | "$HEAD" -1
   else
-    read_archive | jq -r --arg k "$key" '.entries[]? | select(.id == $k) | .date' | head -1
+    read_archive | "$JQ" -r --arg k "$key" '.entries[]? | select(.id == $k) | .date' | "$HEAD" -1
   fi
 }
 
@@ -805,7 +893,7 @@ screensaver_put_frame() {
   local frame="$FRAMES_DIR/$1.txt" tmp
   [[ -s $frame ]] || return 1
   tmp=$(mktemp "$SCREENSAVER_FILE.XXXXXX") || return 1
-  cp "$frame" "$tmp" && mv "$tmp" "$SCREENSAVER_FILE" || { rm -f "$tmp"; return 1; }
+  cp "$frame" "$tmp" && "$MV" "$tmp" "$SCREENSAVER_FILE" || { rm -f "$tmp"; return 1; }
 }
 
 # True when the file on disk is one of ours (any frame), so we know it is safe
@@ -948,6 +1036,7 @@ wait_for_screensaver() {
   if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} && -S $sock ]] && command -v socat >/dev/null 2>&1; then
     exec {fd}< <(socat -U - "UNIX-CONNECT:$sock" 2>/dev/null)
     pid=$!
+    bw_track_child "$pid"
     while IFS= read -r -u "$fd" line; do
       if [[ $line == openwindow\>\>*,org.omarchy.screensaver,* ]]; then
         exec {fd}<&-
@@ -1091,7 +1180,7 @@ cmd_fetch() {
   write_state status=fetching updatedAt="$(now_iso)"
 
   local images
-  if ! images=$(fetch_metadata "$market") || [[ -z $images || $(jq 'length' <<<"$images") -eq 0 ]]; then
+  if ! images=$(fetch_metadata "$market") || [[ -z $images || $("$JQ" 'length' <<<"$images") -eq 0 ]]; then
     write_state status=error error="Could not reach Bing for market $market" nextCheck=$(( now + 600 ))
     log "could not fetch Bing metadata for $market"
     return 1
@@ -1101,13 +1190,13 @@ cmd_fetch() {
   # the panel stays the right picture even if a new one landed in between.
   if [[ -n $want_date ]]; then
     local compact="${want_date//-/}"
-    day=$(jq -r --arg d "$compact" 'to_entries[] | select(.value.startdate == $d) | .key' <<<"$images" | head -1)
+    day=$("$JQ" -r --arg d "$compact" 'to_entries[] | select(.value.startdate == $d) | .key' <<<"$images" | "$HEAD" -1)
     # The picture on screen is still fine, so this is a CLI error, not a state.
     [[ -n $day ]] || { write_state status=ok; fail "Bing has no picture for $want_date in $market"; }
   fi
 
   local meta
-  meta=$(jq -c ".[$day] // empty" <<<"$images")
+  meta=$("$JQ" -c ".[$day] // empty" <<<"$images")
   if [[ -z $meta ]]; then
     write_state status=ok
     fail "Bing has no picture from $day days ago for $market"
@@ -1205,17 +1294,40 @@ cmd_open() {
   if [[ -n $key ]]; then
     when=$(archive_lookup_date "$key")
     [[ -n $when ]] || fail "no archived picture matches '$key'"
-    link=$(read_archive | jq -r --arg d "$when" '.entries[]? | select(.date == $d) | .link // empty' | head -1)
+    link=$(read_archive | "$JQ" -r --arg d "$when" '.entries[]? | select(.date == $d) | .link // empty' | "$HEAD" -1)
   else
     link=$(state_get link)
   fi
   link=$(sanitize_link "$link")
   [[ -n $link ]] || fail "no story link yet; run fetch first"
-  if command -v omarchy-launch-browser >/dev/null 2>&1; then
-    setsid omarchy-launch-browser "$link" >/dev/null 2>&1 &
+  detach_to "$link" omarchy-launch-browser xdg-open
+}
+
+# Hand one argument to the first handler that is actually installed under a
+# trusted directory, detached into its own session. Resolving the handler (and
+# setsid) rather than calling it by name keeps "open the story" from being
+# redirected by whatever PATH happens to be around.
+detach_to() {
+  local target="$1" name launcher="" setsid_bin
+  shift
+  for name in "$@"; do
+    launcher=$(resolve_tool "$name") && break
+    launcher=""
+  done
+  [[ -n $launcher ]] || fail "no handler available to open '$target'"
+  if setsid_bin=$(resolve_tool setsid); then
+    "$setsid_bin" "$launcher" "$target" >/dev/null 2>&1 &
   else
-    setsid xdg-open "$link" >/dev/null 2>&1 &
+    "$launcher" "$target" >/dev/null 2>&1 &
   fi
+}
+
+# The Wallpapers button in the panel. Only ever opens the plugin's own
+# backgrounds folder, only when it exists, and only through the file handler --
+# a directory has no business going to a browser.
+cmd_backgrounds() {
+  [[ -d $BACKGROUNDS_DIR ]] || fail "no backgrounds yet; run fetch first"
+  detach_to "$BACKGROUNDS_DIR" xdg-open
 }
 
 # The screensaver needs ImageMagick, which is not guaranteed on a stock
@@ -1243,12 +1355,15 @@ cmd_next() {
 main() {
   local cmd="${1:-fetch}"
   shift || true
+  # Cap what the service can be made to buffer. Only the subcommands it drives:
+  # a caller asking for status or archive JSON gets all of it.
+  case "$cmd" in fetch | apply | parallax) bound_output ;; esac
   load_settings
   case "$cmd" in
     fetch) cmd_fetch "$@" ;;
     apply) cmd_apply "$@" ;;
-    archive) read_archive | jq . ;;
-    status) read_state | jq . ;;
+    archive) read_archive | "$JQ" . ;;
+    status) read_state | "$JQ" . ;;
     settings) print_settings ;;
     set)
       [[ $# -eq 2 ]] || fail "usage: bing-wallpaper set <key> <value>"
@@ -1260,11 +1375,12 @@ main() {
       fi
       ;;
     open) cmd_open "$@" ;;
+    backgrounds) cmd_backgrounds ;;
     next) cmd_next ;;
     install-deps) cmd_install_deps ;;
     parallax) cmd_parallax "$@" ;;
     -h | --help | help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|next|install-deps|parallax)" ;;
+    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|backgrounds|next|install-deps|parallax)" ;;
   esac
 }
 

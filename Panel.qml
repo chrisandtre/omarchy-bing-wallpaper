@@ -107,12 +107,14 @@ Panel {
     if (hostWidget && typeof hostWidget.refresh === "function") hostWidget.refresh()
   }
 
-  // Opens the story behind whichever picture the hero is showing.
+  // Opens the story behind whichever picture the hero is showing. The link
+  // itself is not passed anywhere: `bing-wallpaper open <date>` looks it up and
+  // re-checks it against the bing.com allowlist before a browser sees it. The
+  // safeLink test here only decides whether there is a story to offer.
   function openStory() {
-    var link = Model.safeLink(shown.link)
-    if (!link) return
-    if (hostWidget && typeof hostWidget.openLink === "function") hostWidget.openLink(link)
-    else Util.execArgv(["omarchy-launch-browser", link])
+    if (!Model.safeLink(shown.link)) return
+    if (hostWidget && typeof hostWidget.openStory === "function")
+      hostWidget.openStory(shown.date ? String(shown.date) : "")
   }
 
   function applyPreview() {
@@ -125,9 +127,7 @@ Panel {
   }
 
   function openFolder() {
-    var config = Quickshell.env("XDG_CONFIG_HOME")
-    if (!config || config === "") config = Quickshell.env("HOME") + "/.config"
-    Util.execArgv(["xdg-open", config + "/omarchy/themes/bing/backgrounds"])
+    if (hostWidget && typeof hostWidget.openBackgrounds === "function") hostWidget.openBackgrounds()
   }
 
   KeyboardPanel {

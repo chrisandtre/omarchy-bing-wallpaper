@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.5.4] - 2026-09-14
 
+### Security
+
+- **Execution boundary.** Nothing is launched by bare name through an inherited
+  `PATH` any more. The service starts `/usr/bin/bash` with a cleared
+  environment and an explicit allowlist (`PATH` pinned to trusted system
+  directories, plus only the session variables the theme, browser and
+  notification helpers need); the script pins `PATH` again on its own side,
+  drops the command hash, and resolves `curl`, `jq`, `file`, `head`, `stat` and
+  `mv` to absolute paths under those directories. A writable directory early on
+  somebody's `PATH` can no longer decide what an unattended refresh runs.
+- **Lifecycle ownership.** Jobs run under `timeout`, which puts them in their
+  own process group: a refresh has a 300 second deadline, `TERM` escalates to
+  `KILL` after 10 seconds, and both reach everything the script spawned instead
+  of orphaning it. The parallax daemon gets the same group with the deadline
+  disabled, the script terminates its own background children on a signal, and
+  the service tears both down when it is destroyed, so a shell restart no
+  longer leaves a process tree behind.
+- **Output ceilings.** The service collected the script's stderr into a buffer
+  with no limit of its own. The script now caps its own stdout and stderr at
+  64 KiB for the subcommands the service drives, draining past the ceiling
+  rather than closing so a chatty helper still runs to completion.
+- **One path for remote strings.** The bar widget and panel no longer launch a
+  browser or a file manager themselves. Every action is a subcommand of
+  `bin/bing-wallpaper` (`open`, the new `backgrounds`), so a link from Bing
+  meets `sanitize_link` on one path however it was triggered, and the handler
+  is resolved under the trusted directories rather than through `PATH`.
+
+### Added
+
+- `bing-wallpaper backgrounds` opens the generated backgrounds folder, and is
+  what the panel's Wallpapers button now calls.
+
 ### Fixed
 
 - The detail panel could not be closed, and held the pointer and keyboard

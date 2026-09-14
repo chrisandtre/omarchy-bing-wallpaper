@@ -291,6 +291,19 @@ For people who like to know before they install:
 - **Runs:** `curl`, `jq`, `file`, `aether`, and Omarchy's `omarchy-theme-set`,
   `omarchy-theme-bg-set`, `omarchy-notification-send`, `omarchy-launch-browser`.
 - **Privileges:** none. No sudo or pkexec is required.
+- **Execution:** nothing is launched by bare name through an inherited `PATH`.
+  The service starts `/usr/bin/bash` with an explicit environment (`PATH` fixed
+  to `/usr/bin:/bin:/usr/share/omarchy/bin:/usr/local/bin`, plus only the
+  session variables the theme, browser and notification helpers need), and the
+  script pins `PATH` again on its own side and resolves `curl`, `jq`, `file`,
+  `head`, `stat` and `mv` to absolute paths under those directories. Jobs run
+  under `timeout`, which owns their process group: a refresh has a five-minute
+  deadline, `TERM` escalates to `KILL`, and shutting the shell down takes the
+  whole tree with it. The script caps its own stdout and stderr at 64 KiB so a
+  chatty helper cannot grow the shell's buffers. Every action the bar widget
+  and panel offer is a subcommand of `bin/bing-wallpaper`, so a link from Bing
+  meets the same allowlist on the same path however it was triggered. See
+  `Exec.qml`.
 
 ## CLI
 
@@ -305,13 +318,17 @@ bing-wallpaper status        # contents of state.json
 bing-wallpaper settings      # effective settings
 bing-wallpaper set KEY VALUE # update a setting in shell.json
 bing-wallpaper open [WHEN]   # open the story behind today's (or an archived) picture
+bing-wallpaper backgrounds   # open the generated backgrounds folder
 bing-wallpaper next          # when the next check is due
 bing-wallpaper install-deps  # install ImageMagick for the screensaver
 bing-wallpaper parallax      # drift the screensaver between effects (the service runs this)
 ```
 
 Every setting can be overridden per invocation with `BING_WALLPAPER_<KEY>`,
-for example `BING_WALLPAPER_MARKET=ja-JP bing-wallpaper fetch --force`.
+for example `BING_WALLPAPER_MARKET=ja-JP bing-wallpaper fetch --force`. These
+apply to a hand-run command; the service starts the script with a fixed
+environment of its own (see *Execution* below), so a scheduled refresh always
+uses the settings in `shell.json`.
 
 ## Uninstall
 

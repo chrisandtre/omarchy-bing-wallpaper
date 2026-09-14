@@ -17,6 +17,11 @@ Item {
   readonly property string script: String(Qt.resolvedUrl("bin/bing-wallpaper")).replace(/^file:\/\//, "")
   readonly property bool busy: process.running
 
+  // The execution boundary lives in Exec.qml: absolute interpreter, explicit
+  // environment, and `timeout` owning the process group so a job's children
+  // cannot outlive it. Read that file for the why.
+  readonly property Exec exec: Exec {}
+
   property string lastOutput: ""
   property int lastExitCode: 0
 
@@ -31,7 +36,7 @@ Item {
       if (!(plainFetch && root.pending !== null)) root.pending = args
       return
     }
-    process.command = ["bash", script].concat(args)
+    process.command = exec.command(script, exec.jobDeadline, args)
     process.running = true
   }
 
@@ -46,19 +51,35 @@ Item {
     run(["apply", String(when)])
   }
 
-  function openStory() {
-    Quickshell.execDetached(["bash", script, "open"])
+  // `bing-wallpaper open [when]` re-checks the link against the bing.com
+  // allowlist before it reaches a browser, so the panel never has to.
+  function openStory(when) {
+    exec.detached(script, exec.actionDeadline,
+                  when === undefined || when === null || String(when) === "" ? ["open"] : ["open", String(when)])
+  }
+
+  // The panel's Wallpapers button. Only ever the plugin's own folder.
+  function openBackgrounds() {
+    exec.detached(script, exec.actionDeadline, ["backgrounds"])
   }
 
   Process {
     id: process
+    clearEnvironment: true
+    environment: root.exec.environment
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.lastOutput = String(text || "").trim()
+      // The script caps its own stderr well below this; the guard is here so a
+      // helper that somehow writes past it still cannot grow this buffer.
+      onStreamFinished: root.lastOutput = String(text || "").trim().slice(0, 8192)
     }
     onExited: function(exitCode) {
       root.lastExitCode = exitCode
-      if (exitCode !== 0 && root.lastOutput !== "")
+      // 124 is timeout(1) reporting that the deadline was reached; 137 is the
+      // KILL that follows when the job ignored the TERM.
+      if (exitCode === 124 || exitCode === 137)
+        console.warn("bing-wallpaper: job exceeded its " + root.exec.jobDeadline + "s deadline and was terminated")
+      else if (exitCode !== 0 && root.lastOutput !== "")
         console.warn("bing-wallpaper: " + root.lastOutput)
       if (root.pending !== null) {
         var next = root.pending
@@ -71,10 +92,14 @@ Item {
   // Drifts the screensaver's camera between ttfx effects; see
   // `bing-wallpaper parallax`. The script blocks on Hyprland's event socket
   // until a screensaver window opens, so keeping it alive costs nothing. If it
-  // ever dies it is brought back after a pause.
+  // ever dies it is brought back after a pause. No deadline -- it is meant to
+  // run for the session -- but it goes through `timeout` all the same, for the
+  // process group that makes shutdown reach its children.
   Process {
     id: parallax
-    command: ["bash", root.script, "parallax"]
+    clearEnvironment: true
+    environment: root.exec.environment
+    command: root.exec.command(root.script, 0, ["parallax"])
     running: true
     onExited: parallaxRestart.restart()
   }
@@ -84,6 +109,15 @@ Item {
     interval: 30000
     repeat: false
     onTriggered: parallax.running = true
+  }
+
+  // Going away is not a reason to leave a download or a theme build running.
+  // TERM reaches the whole process group through `timeout`, which escalates to
+  // KILL on its own after --kill-after if anything in there ignores it.
+  Component.onDestruction: {
+    parallaxRestart.stop()
+    if (parallax.running) parallax.signal(15)
+    if (process.running) process.signal(15)
   }
 
   // Let the shell finish coming up before the first run; theme application
@@ -108,7 +142,7 @@ Item {
 
     function fetch(): void { root.fetch(false) }
     function refresh(): void { root.fetch(true) }
-    function open(): void { root.openStory() }
+    function open(): void { root.openStory("") }
     function apply(when: string): void { root.apply(when) }
   }
 }
