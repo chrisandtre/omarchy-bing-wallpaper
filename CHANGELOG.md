@@ -20,6 +20,12 @@ All notable changes to this project are documented here. The format follows
   previous design. An edited copy of the design is never overwritten or removed.
 - `bing-wallpaper lock-screen` re-applies the setting from the command line.
 
+### Changed
+
+- Renamed to **Bing Wallpaper, Theme, Screensaver & Lock Screen** (the plugin
+  id, settings and install path are unchanged), with a manifest description
+  and README opening that name all four places the picture goes.
+
 ## [0.5.4] - 2026-09-14
 
 ### Security

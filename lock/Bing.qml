@@ -2,11 +2,11 @@
 // the picture sharp and full screen, a large clock over it, and the story
 // behind it in the corner.
 //
-// Installed into ~/.config/omarchy/lock-designs/ by the Bing Wallpaper & Theme
-// plugin (io.github.chrisandtre.bing-wallpaper) when its "Lock screen" setting
-// is on, and selected in Lock Screen Explorer as "my-bing". The plugin
-// refreshes this copy on upgrade only while it is unchanged; edit it and it is
-// yours. Turning the setting off removes it (again, only if unchanged).
+// Installed into ~/.config/omarchy/lock-designs/ by the Bing Wallpaper, Theme,
+// Screensaver & Lock Screen plugin (io.github.chrisandtre.bing-wallpaper) when
+// its "Lock screen" setting is on, and selected in Lock Screen Explorer as
+// "my-bing". The plugin refreshes this copy on upgrade only while it is
+// unchanged; edit it and it is yours. Turning the setting off removes it (again, only if unchanged).
 //
 // The picture itself is whatever Omarchy's current background is, which the
 // plugin points at Bing's image every morning, so a new day's picture reaches

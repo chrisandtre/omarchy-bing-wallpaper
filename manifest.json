@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "io.github.chrisandtre.bing-wallpaper",
-  "name": "Bing Wallpaper & Theme",
+  "name": "Bing Wallpaper, Theme, Screensaver & Lock Screen",
   "version": "0.6.0",
   "author": "Chris Kitson",
-  "description": "Bing image of the day as your wallpaper, plus a matching 'Bing' theme generated from its colors with Aether every morning.",
+  "description": "The Bing image of the day across your whole desktop, new every morning: your wallpaper, a matching theme built from its colors with Aether, your screensaver drawn as ASCII art, and your lock screen (with Lock Screen Explorer). Each part can be switched off.",
   "kinds": [
     "service",
     "bar-widget"
@@ -14,8 +14,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Bing Wallpaper & Theme",
-    "description": "Today's Bing image title, with a detail panel and settings",
+    "displayName": "Bing Wallpaper, Theme, Screensaver & Lock Screen",
+    "description": "Today's Bing image title, with a detail panel for the wallpaper, theme, screensaver and lock screen",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "center"

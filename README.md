@@ -1,8 +1,8 @@
 <div align="center">
 
-# Bing Wallpaper & Theme for Omarchy
+# Bing Wallpaper, Theme, Screensaver & Lock Screen for Omarchy
 
-**The Bing image of the day as your wallpaper, and a matching theme built from its colors every morning.**
+**The Bing image of the day across your whole desktop, new every morning.**
 
 [![CI](https://github.com/chrisandtre/omarchy-bing-wallpaper/actions/workflows/ci.yml/badge.svg)](https://github.com/chrisandtre/omarchy-bing-wallpaper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -14,9 +14,18 @@
 </div>
 
 If you liked having Bing's daily photo on your Windows desktop, this brings it
-to Omarchy and goes one better: every day the whole desktop is re-themed to
-match the picture. A bar widget shows the title; click it for the story behind
-the image, the photographer's credit, and the plugin's settings.
+to Omarchy and goes one better. Every morning one picture lands in four places:
+
+| | | |
+|---|---|---|
+| **Wallpaper** | Today's picture, in the Bing region you choose, with a week of earlier ones to switch back to | Always on |
+| **Theme** | A matching Omarchy theme named **Bing**, built from the picture's colors with [Aether](https://github.com/omacom/aether) | On by default |
+| **Screensaver** | The picture drawn as colour ASCII art in place of the Omarchy logo, with a caption | On by default |
+| **Lock screen** | The picture sharp behind the lock with a clock, its title and place, Windows style | Optional, needs [Lock Screen Explorer](https://github.com/SirJul1337/omarchy-lock-explorer) |
+
+Each one beyond the wallpaper is a toggle in the panel. A bar widget shows the
+title; click it for the story behind the image, the photographer's credit, and
+the plugin's settings.
 
 ## Showcase
 
