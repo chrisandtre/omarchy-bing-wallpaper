@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -26,9 +27,9 @@ Panel {
   readonly property var archive: hostWidget && hostWidget.archive ? hostWidget.archive : ({})
   readonly property var entries: Model.archiveEntries(archive)
   readonly property bool busy: hostWidget ? hostWidget.busy === true : false
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.4)
-  readonly property color accent: Color.accent
+  readonly property color accent: Commons.Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   // What is on screen, and what the user is looking at. Clicking an archive
@@ -674,7 +675,7 @@ Panel {
               width: parent.width
               textFormat: Text.PlainText
               text: root.busy && root.state.archive !== "downloading" ? "Fetching today's image…" : Model.statusLine(root.state)
-              color: root.state.status === "error" ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
+              color: root.state.status === "error" ? (root.bar ? root.bar.urgent : Commons.Color.urgent) : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
@@ -697,7 +698,7 @@ Panel {
               textFormat: Text.PlainText
               text: Model.screensaverLine(root.state)
               color: root.state.screensaver === "magick-missing" || root.state.screensaver === "failed"
-                ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
+                ? (root.bar ? root.bar.urgent : Commons.Color.urgent) : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
@@ -708,7 +709,7 @@ Panel {
               visible: text !== ""
               textFormat: Text.PlainText
               text: Model.lockScreenLine(root.state)
-              color: root.state.lockScreen === "failed" ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
+              color: root.state.lockScreen === "failed" ? (root.bar ? root.bar.urgent : Commons.Color.urgent) : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
