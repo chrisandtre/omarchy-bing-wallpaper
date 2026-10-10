@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-10-10
+
+### Added
+
+- **Lock screen.** A new `lockScreen` setting (off by default, **Show on lock
+  screen** in the panel) adds a "Bing" design to
+  [Lock Screen Explorer](https://github.com/SirJul1337/omarchy-lock-explorer)
+  and switches to it: today's picture sharp and full screen, a large clock, and
+  the title, place and photographer in the corner. The design ships as
+  `lock/Bing.qml` and is copied to `~/.config/omarchy/lock-designs/`; Explorer
+  keeps doing all the locking and authentication. The picture follows the
+  wallpaper on its own, the caption is read live from `state.json` and hidden
+  when the wallpaper is not Bing's, and turning the setting off restores the
+  previous design. An edited copy of the design is never overwritten or removed.
+- `bing-wallpaper lock-screen` re-applies the setting from the command line.
+
 ## [0.5.4] - 2026-09-14
 
 ### Security

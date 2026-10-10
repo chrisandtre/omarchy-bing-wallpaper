@@ -53,6 +53,7 @@ Panel {
   readonly property string screensaverStyle: String(setting("screensaverStyle", "auto"))
   readonly property bool screensaverCaption: setting("screensaverCaption", true) !== false && setting("screensaverCaption", true) !== "false"
   readonly property bool screensaverParallax: setting("screensaverParallax", true) !== false && setting("screensaverParallax", true) !== "false"
+  readonly property bool lockScreen: setting("lockScreen", false) === true || setting("lockScreen", false) === "true"
   // Parallax only means something for the depth style ("auto" is depth
   // wherever colour works).
   readonly property bool parallaxApplies: screensaverStyle === "auto" || screensaverStyle === "depth"
@@ -652,6 +653,18 @@ Panel {
             onClicked: root.update("screensaverParallax", !root.screensaverParallax)
           }
 
+          Toggle {
+            width: parent.width
+            label: "Show on lock screen"
+            description: root.state.lockScreen === "no-explorer"
+              ? "Needs the Lock Screen Explorer plugin; the stock lock shows the picture blurred"
+              : "Today's picture sharp behind the lock, with its title and place"
+            checked: root.lockScreen
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.update("lockScreen", !root.lockScreen)
+          }
+
           // ---- Status
           Column {
             width: parent.width
@@ -685,6 +698,17 @@ Panel {
               text: Model.screensaverLine(root.state)
               color: root.state.screensaver === "magick-missing" || root.state.screensaver === "failed"
                 ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              visible: text !== ""
+              textFormat: Text.PlainText
+              text: Model.lockScreenLine(root.state)
+              color: root.state.lockScreen === "failed" ? (root.bar ? root.bar.urgent : Color.urgent) : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap

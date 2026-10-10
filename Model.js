@@ -162,6 +162,16 @@ function screensaverLine(state) {
   return "Screensaver shows today's picture"
 }
 
+// Lock screen status, only when the setting is on.
+function lockScreenLine(state) {
+  if (!state) return ""
+  var status = String(state.lockScreen || "")
+  if (status === "applied") return "Lock screen shows today's picture (Lock Screen Explorer design \"Bing\")"
+  if (status === "failed") return "Could not set up the Bing lock screen design"
+  if (status === "no-explorer") return "Lock screen design needs Lock Screen Explorer"
+  return ""
+}
+
 // The chips drawn under a picture to preview its theme: the background with
 // "Aa" in the foreground colour, then the accent and the six ANSI hues.
 var SWATCH_KEYS = ["background", "accent", "color1", "color2", "color3", "color4", "color5", "color6"]

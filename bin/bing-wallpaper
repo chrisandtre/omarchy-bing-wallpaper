@@ -16,6 +16,7 @@
 #   bing-wallpaper backgrounds       Open the generated backgrounds folder
 #   bing-wallpaper next              Print when the next Bing image is expected
 #   bing-wallpaper install-deps      Install ImageMagick (needed by the screensaver)
+#   bing-wallpaper lock-screen       Re-sync the Bing lock screen design with the setting
 #   bing-wallpaper parallax          Drift the screensaver between effects (run by the service)
 #
 # Settings are read from the plugin's inline entry in ~/.config/omarchy/shell.json
@@ -126,6 +127,13 @@ STATE_FILE="$STATE_DIR/state.json"
 ARCHIVE_FILE="$STATE_DIR/archive.json"
 SCREENSAVER_BACKUP="$STATE_DIR/screensaver.txt.orig"
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/bing-wallpaper.lock"
+PLUGIN_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+# The lock screen design is handed to Lock Screen Explorer, which loads any
+# .qml in lock-designs/ and names it after the file (Bing.qml -> my-bing).
+LOCK_DESIGN_SRC="$PLUGIN_ROOT/lock/Bing.qml"
+LOCK_DESIGNS_DIR="$CONFIG_HOME/omarchy/lock-designs"
+LOCK_DESIGN_FILE="$LOCK_DESIGNS_DIR/Bing.qml"
+LOCK_DESIGN_ID="my-bing"
 
 BING_HOST="https://www.bing.com"
 # Bing's archive API serves at most the last eight pictures (idx 0..7).
@@ -153,6 +161,7 @@ declare -A DEFAULTS=(
   [screensaverSize]="120x29"
   [screensaverStyle]="auto"
   [screensaverCaption]="true"
+  [lockScreen]="false"
   [screensaverParallax]="true"
 )
 
@@ -226,6 +235,7 @@ valid_setting_value() {
     screensaverStyle)    [[ $value =~ ^(auto|mono|color|depth)$ ]] ;;
     screensaverCaption)  [[ $value =~ ^(true|false)$ ]] ;;
     screensaverParallax) [[ $value =~ ^(true|false)$ ]] ;;
+    lockScreen)          [[ $value =~ ^(true|false)$ ]] ;;
     *) return 1 ;;
   esac
 }
@@ -1012,6 +1022,111 @@ sync_screensaver() {
     screensaverCaption="${SETTINGS[screensaverCaption]}" screensaverParallax="${SETTINGS[screensaverParallax]}"
 }
 
+# --------------------------------------------------------------- lock screen
+
+# Both Omarchy lock screens -- the stock one and Lock Screen Explorer -- already
+# draw ~/.local/state/omarchy/current/background, which a fetch points at
+# today's picture, so the lock screen always has the right image. What it lacks
+# is a way to *show* it: the stock lock blurs it away, and so do most Explorer
+# designs. The lockScreen setting adds a design of our own to Explorer (see
+# lock/Bing.qml): the picture sharp, a clock, and its title and place.
+#
+# Explorer does the locking, the PAM conversation and every other part that has
+# to be right; we only drop one file in its designs folder and ask it, over its
+# IPC, to use it. Nothing here touches authentication.
+
+lock_ipc() {
+  local shell_bin
+  shell_bin=$(resolve_tool omarchy-shell) || return 1
+  timeout 5 "$shell_bin" lock "$@" 2>/dev/null
+}
+
+# Explorer answers `lock design`; the stock lock has no such method.
+lock_explorer_running() {
+  [[ -n $(lock_ipc design) ]]
+}
+
+lock_design_sum() {
+  [[ -f $1 ]] && cksum <"$1" | "$AWK" '{ print $1 }'
+}
+
+# The installed copy is ours to replace or remove only while it is byte for
+# byte what we last wrote. Edited, it belongs to the user.
+lock_design_is_ours() {
+  local current
+  current=$(lock_design_sum "$LOCK_DESIGN_FILE")
+  [[ -n $current && $current == "$(state_get lockDesignSum)" ]]
+}
+
+# Put the shipped design in place, or refresh it after an upgrade.
+lock_design_install() {
+  local tmp
+  [[ -f $LOCK_DESIGN_SRC ]] || return 1
+  if [[ -f $LOCK_DESIGN_FILE ]]; then
+    lock_design_is_ours || return 0
+    cmp -s "$LOCK_DESIGN_SRC" "$LOCK_DESIGN_FILE" && return 0
+  fi
+  mkdir -p "$LOCK_DESIGNS_DIR" || return 1
+  tmp=$(mktemp "$LOCK_DESIGNS_DIR/.Bing.XXXXXX") || return 1
+  cp "$LOCK_DESIGN_SRC" "$tmp" && chmod 644 "$tmp" && "$MV" "$tmp" "$LOCK_DESIGN_FILE" || { rm -f "$tmp"; return 1; }
+  write_state lockDesignSum="$(lock_design_sum "$LOCK_DESIGN_FILE")"
+}
+
+# Explorer only learns of a new file when it rescans lock-designs/, which it
+# does when it locks or opens a preview. `previewDesign` rescans first and,
+# while the id is still unknown, returns without showing anything -- so one
+# call is a rescan with no side effect. Then wait for the scan to land.
+lock_select_design() {
+  local id="$1" out="" previewed=0
+  [[ $(lock_ipc setDesign "$id") == ok ]] && return 0
+  [[ $(lock_ipc previewDesign "$id") == ok ]] && previewed=1
+  for _ in 1 2 3 4 5 6; do
+    sleep 0.5
+    out=$(lock_ipc setDesign "$id")
+    [[ $out == ok ]] && break
+  done
+  # Had the scan already finished, previewDesign opened a preview: close it.
+  (( previewed )) && lock_ipc hidePreview >/dev/null
+  [[ $out == ok ]]
+}
+
+# Bring the lock screen in line with the setting. Called when it changes and
+# after a fetch. Selecting the design only happens when the setting is turned
+# on: picking another design in Explorer afterwards is the user's call, and a
+# morning fetch must not undo it.
+sync_lock_screen() {
+  local select="${1:-false}" current previous
+
+  if [[ ${SETTINGS[lockScreen]} != true ]]; then
+    [[ $(state_get lockScreen) =~ ^(off)?$ ]] && return 0
+    # Hand the lock screen back to the design it had before, then take ours
+    # away. Explorer falls back to its default if it is still selected.
+    if lock_explorer_running && [[ $(lock_ipc design) == "$LOCK_DESIGN_ID" ]]; then
+      previous=$(state_get lockPrevDesign)
+      [[ -n $previous && $previous != "$LOCK_DESIGN_ID" ]] && lock_ipc setDesign "$previous" >/dev/null
+    fi
+    lock_design_is_ours && rm -f "$LOCK_DESIGN_FILE"
+    write_state lockScreen=off lockPrevDesign="" lockDesignSum=""
+    return 0
+  fi
+
+  # The stock lock still shows today's picture, blurred; the panel says so.
+  if ! lock_explorer_running; then
+    write_state lockScreen=no-explorer
+    return 0
+  fi
+
+  lock_design_install || { write_state lockScreen=failed; return 1; }
+  if [[ $select == true ]]; then
+    current=$(lock_ipc design)
+    if [[ $current != "$LOCK_DESIGN_ID" ]]; then
+      write_state lockPrevDesign="$current"
+      lock_select_design "$LOCK_DESIGN_ID" || { write_state lockScreen=failed; return 1; }
+    fi
+  fi
+  write_state lockScreen=applied
+}
+
 # ----------------------------------------------------------------- parallax
 
 # `bing-wallpaper parallax` is a small daemon the service keeps running. It
@@ -1158,6 +1273,15 @@ cmd_fetch() {
     sync_screensaver "$(state_get image)"
   fi
 
+  # Same for the lock screen toggle. Until it has been applied this retries on
+  # every tick, so installing Lock Screen Explorer later is picked up too.
+  local lock_state
+  lock_state=$(state_get lockScreen)
+  if [[ ${SETTINGS[lockScreen]} == true && $lock_state != applied ]] ||
+     [[ ${SETTINGS[lockScreen]} != true && -n $lock_state && $lock_state != off ]]; then
+    sync_lock_screen true
+  fi
+
   # Cheap path: nothing can have changed yet, the palette mode is the same,
   # and the archive matches. The service ticks often so this has to be
   # nearly free.
@@ -1267,6 +1391,12 @@ cmd_fetch() {
     sync_screensaver "$image" "$title" "$copyright"
   fi
 
+  # Keeps the installed lock design current after an upgrade. The picture and
+  # caption reach the lock screen on their own (see sync_lock_screen).
+  if (( changed )) && [[ ${SETTINGS[lockScreen]} == true ]]; then
+    sync_lock_screen
+  fi
+
   if (( changed )) && [[ $(state_get lastNotifiedId) != "$image_id" ]]; then
     notify "Bing: $title" -t 4000
     write_state lastNotifiedId="$image_id"
@@ -1373,14 +1503,19 @@ main() {
         load_settings
         sync_screensaver "$(state_get image)"
       fi
+      if [[ $1 == lockScreen ]]; then
+        load_settings
+        sync_lock_screen true
+      fi
       ;;
     open) cmd_open "$@" ;;
     backgrounds) cmd_backgrounds ;;
     next) cmd_next ;;
     install-deps) cmd_install_deps ;;
+    lock-screen) sync_lock_screen true ;;
     parallax) cmd_parallax "$@" ;;
-    -h | --help | help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|backgrounds|next|install-deps|parallax)" ;;
+    -h | --help | help) sed -n '2,26p'"$0" | sed 's/^# \{0,1\}//' ;;
+    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|backgrounds|next|install-deps|lock-screen|parallax)" ;;
   esac
 }
 

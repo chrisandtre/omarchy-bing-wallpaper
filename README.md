@@ -49,6 +49,9 @@ different mornings:
   Omarchy logo, dissolved by the same `ttfx` effects, in the photograph's own
   colours, with a sense of depth, a slow parallax drift between effects and a
   caption naming the place. On by default; one toggle puts your old art back
+- **Lock screen** (optional, with [Lock Screen Explorer](https://github.com/SirJul1337/omarchy-lock-explorer)):
+  a "Bing" design that shows today's picture sharp behind the lock, Windows
+  style, with a large clock and the picture's title and place in the corner
 - **No sudo or pkexec is required** for anything the plugin does on its own.
   Everything happens in your home directory. (The one exception is installing
   ImageMagick for the screensaver, which is an ordinary package install you
@@ -62,7 +65,8 @@ folder) and discarded if they run over, before anything parses them. The story
 link Bing supplies is only opened if it is an https URL on bing.com. The plugin
 writes to `~/.config/omarchy/themes/bing/`, `~/.local/state/bing-wallpaper/`,
 `~/.config/omarchy/branding/screensaver.txt` (only with the screensaver on, and
-your original is kept and restored) and its own entry in
+your original is kept and restored), `~/.config/omarchy/lock-designs/Bing.qml`
+(only with the lock screen setting on) and its own entry in
 `~/.config/omarchy/shell.json`. Nothing the plugin does on its own needs elevated
 rights; `install-deps` runs `omarchy-pkg-add imagemagick` and is the only step
 that asks for a password.
@@ -142,6 +146,7 @@ options, so nothing else on your system is modified.
 | `screensaverStyle` | `auto` | `depth` (colour with depth and parallax), `color`, `mono` (plain glyphs), or `auto`: `depth` where Omarchy keeps colour, `mono` where it does not |
 | `screensaverCaption` | `true` | Write the picture's title and place under the art |
 | `screensaverParallax` | `true` | Drift the scene by depth between effects (`depth` style only) |
+| `lockScreen` | `false` | Add the "Bing" design to Lock Screen Explorer and switch to it (see [Lock screen](#lock-screen)) |
 | `showTitle` | `true` | Show the title next to the icon in the bar |
 | `maxTitleChars` | `28` | Truncate long titles in the bar |
 
@@ -150,6 +155,34 @@ Example entry in `shell.json`:
 ```json
 { "id": "io.github.chrisandtre.bing-wallpaper", "market": "en-GB", "mode": "auto", "extractMode": "muted" }
 ```
+
+## Lock screen
+
+Omarchy's lock screen already draws your current wallpaper, so it always has
+today's picture -- it just blurs it out of sight. **Show on lock screen** in the
+panel (or `bing-wallpaper set lockScreen true`) shows it properly, the way
+Windows does: the picture sharp and full screen, a large clock, and the title,
+place and photographer in the bottom corner.
+
+This is a design for [Lock Screen Explorer](https://github.com/SirJul1337/omarchy-lock-explorer),
+not a lock screen of its own. Explorer does the locking, the password,
+fingerprint, face and security key, multi-monitor and everything else that has
+to be right; this plugin only drops `lock/Bing.qml` into
+`~/.config/omarchy/lock-designs/` and asks Explorer, over its IPC, to switch to
+it. It shows up in Explorer as **Bing** (id `my-bing`) and honours Explorer's
+12-hour clock, language and wallpaper settings.
+
+- The picture changes with the wallpaper every morning; there is nothing to
+  regenerate. The caption is read from `state.json` and only shown while it
+  describes the picture actually on screen, so a wallpaper of your own gets no
+  stale caption.
+- Pick another design in Explorer afterwards and it stays picked: the plugin
+  only switches designs when you turn the setting on.
+- Turning it off switches Explorer back to the design you had before and
+  removes `Bing.qml`. Edit that file and it is yours: upgrades and the toggle
+  leave an edited copy alone.
+- Without Explorer the setting does nothing beyond a note in the panel. Install
+  Explorer later and it is picked up on the next refresh.
 
 ## Screensaver
 
@@ -285,11 +318,13 @@ For people who like to know before they install:
 
 - **Network:** `www.bing.com` only, for the daily metadata and the image.
 - **Writes:** `~/.config/omarchy/themes/bing/` (the generated theme and images),
-  `~/.local/state/bing-wallpaper/` (`state.json`, `archive.json`), and its own entry in
+  `~/.local/state/bing-wallpaper/` (`state.json`, `archive.json`),
+  `~/.config/omarchy/lock-designs/Bing.qml` (only with `lockScreen` on), and its own entry in
   `~/.config/omarchy/shell.json`. Omarchy's own theme machinery then updates the
   usual per-app theme files, as it does for any theme switch.
 - **Runs:** `curl`, `jq`, `file`, `aether`, and Omarchy's `omarchy-theme-set`,
-  `omarchy-theme-bg-set`, `omarchy-notification-send`, `omarchy-launch-browser`.
+  `omarchy-theme-bg-set`, `omarchy-notification-send`, `omarchy-launch-browser`,
+  and `omarchy-shell lock ...` (only with `lockScreen` on, to pick the design).
 - **Privileges:** none. No sudo or pkexec is required.
 - **Execution:** nothing is launched by bare name through an inherited `PATH`.
   The service starts `/usr/bin/bash` with an explicit environment (`PATH` fixed
@@ -321,6 +356,7 @@ bing-wallpaper open [WHEN]   # open the story behind today's (or an archived) pi
 bing-wallpaper backgrounds   # open the generated backgrounds folder
 bing-wallpaper next          # when the next check is due
 bing-wallpaper install-deps  # install ImageMagick for the screensaver
+bing-wallpaper lock-screen   # re-apply the lock screen setting (installs and selects the design)
 bing-wallpaper parallax      # drift the screensaver between effects (the service runs this)
 ```
 
