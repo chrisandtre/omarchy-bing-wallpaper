@@ -162,6 +162,15 @@ function screensaverLine(state) {
   return "Screensaver shows today's picture"
 }
 
+// Shown only when GitHub has a newer release than the one running. The
+// version was checked to be a plain x.y.z before it reached state.json.
+function updateLine(state) {
+  if (!state || !(state.updateAvailable === true || state.updateAvailable === "true")) return ""
+  var latest = String(state.updateLatest || "")
+  if (!/^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$/.test(latest)) return ""
+  return "Version " + latest + " is available — run: omarchy plugin update " + PLUGIN_ID
+}
+
 // Lock screen status, only when the setting is on.
 function lockScreenLine(state) {
   if (!state) return ""

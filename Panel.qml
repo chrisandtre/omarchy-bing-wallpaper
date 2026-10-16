@@ -54,6 +54,7 @@ Panel {
   readonly property bool screensaverCaption: setting("screensaverCaption", true) !== false && setting("screensaverCaption", true) !== "false"
   readonly property bool screensaverParallax: setting("screensaverParallax", true) !== false && setting("screensaverParallax", true) !== "false"
   readonly property bool lockScreen: setting("lockScreen", false) === true || setting("lockScreen", false) === "true"
+  readonly property bool updateCheck: setting("updateCheck", true) !== false && setting("updateCheck", true) !== "false"
   // Parallax only means something for the depth style ("auto" is depth
   // wherever colour works).
   readonly property bool parallaxApplies: screensaverStyle === "auto" || screensaverStyle === "depth"
@@ -665,10 +666,32 @@ Panel {
             onClicked: root.update("lockScreen", !root.lockScreen)
           }
 
+          Toggle {
+            width: parent.width
+            label: "Tell me about updates"
+            description: "Check GitHub once a day for a new release of this plugin; it never updates itself"
+            checked: root.updateCheck
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.update("updateCheck", !root.updateCheck)
+          }
+
           // ---- Status
           Column {
             width: parent.width
             spacing: Style.space(2)
+
+            Text {
+              width: parent.width
+              visible: text !== ""
+              textFormat: Text.PlainText
+              text: root.updateCheck ? Model.updateLine(root.state) : ""
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.weight: Font.DemiBold
+              wrapMode: Text.WordWrap
+            }
 
             Text {
               width: parent.width
