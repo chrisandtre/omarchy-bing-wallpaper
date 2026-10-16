@@ -17,6 +17,7 @@
 #   bing-wallpaper next              Print when the next Bing image is expected
 #   bing-wallpaper install-deps      Install ImageMagick (needed by the screensaver)
 #   bing-wallpaper lock-screen       Re-sync the Bing lock screen design with the setting
+#   bing-wallpaper check-update      Ask GitHub now whether a newer release is out
 #   bing-wallpaper parallax          Drift the screensaver between effects (run by the service)
 #
 # Settings are read from the plugin's inline entry in ~/.config/omarchy/shell.json
@@ -162,6 +163,7 @@ declare -A DEFAULTS=(
   [screensaverStyle]="auto"
   [screensaverCaption]="true"
   [lockScreen]="false"
+  [updateCheck]="true"
   [screensaverParallax]="true"
 )
 
@@ -236,6 +238,7 @@ valid_setting_value() {
     screensaverCaption)  [[ $value =~ ^(true|false)$ ]] ;;
     screensaverParallax) [[ $value =~ ^(true|false)$ ]] ;;
     lockScreen)          [[ $value =~ ^(true|false)$ ]] ;;
+    updateCheck)         [[ $value =~ ^(true|false)$ ]] ;;
     *) return 1 ;;
   esac
 }
@@ -1228,6 +1231,86 @@ notify() {
   omarchy-notification-send "$@" >/dev/null 2>&1 || true
 }
 
+# ------------------------------------------------------------ update notice
+
+# An installed plugin is a plain git checkout that only moves when its owner
+# runs `omarchy plugin update`, which shows the diff and asks first. That review
+# is the point, so this never updates anything: once a day it asks GitHub for
+# the latest published release and, when that is newer than the version
+# running, says so in the panel and with one notification per release.
+#
+# The only thing taken from the response is the tag name, and only when it is
+# a plain x.y.z; the URL is fixed, the response is size-capped like Bing's, and
+# the check is skipped entirely with updateCheck=false.
+UPDATE_URL="https://api.github.com/repos/chrisandtre/omarchy-bing-wallpaper/releases/latest"
+UPDATE_INTERVAL=86400
+UPDATE_MAX_BYTES=262144
+
+installed_version() {
+  "$JQ" -r '.version // empty' "$PLUGIN_ROOT/manifest.json" 2>/dev/null
+}
+
+# True when x.y.z $1 is newer than x.y.z $2.
+version_newer() {
+  local -a a b
+  local i
+  IFS=. read -ra a <<<"$1"
+  IFS=. read -ra b <<<"$2"
+  for i in 0 1 2; do
+    (( 10#${a[i]:-0} > 10#${b[i]:-0} )) && return 0
+    (( 10#${a[i]:-0} < 10#${b[i]:-0} )) && return 1
+  done
+  return 1
+}
+
+check_update() {
+  local force="${1:-0}" now last tmp tag="" latest installed available=false
+
+  if [[ ${SETTINGS[updateCheck]} != true ]]; then
+    [[ -n $(state_get updateLatest) ]] && write_state updateLatest="" updateAvailable=false
+    return 0
+  fi
+
+  installed=$(installed_version)
+  [[ $installed =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 0
+
+  # Just updated: the release we already know about may be the one now
+  # running, so settle that without waiting a day or asking again.
+  latest=$(state_get updateLatest)
+  if [[ -n $latest && $(state_get updateInstalled) != "$installed" ]]; then
+    version_newer "$latest" "$installed" && available=true
+    write_state updateAvailable="$available" updateInstalled="$installed"
+  fi
+
+  now=$(now_epoch)
+  last=$(state_get updateCheckedAt)
+  if (( ! force )) && [[ $last =~ ^[0-9]+$ ]] && (( now - last < UPDATE_INTERVAL )); then
+    return 0
+  fi
+
+  # The attempt counts whether or not it works, so being offline or rate
+  # limited still means at most one request a day.
+  mkdir -p "$STATE_DIR"
+  write_state updateCheckedAt="$now"
+  tmp=$(mktemp "$STATE_DIR/release.XXXXXX") || return 0
+  if fetch_bounded "$UPDATE_URL" "$tmp" "$UPDATE_MAX_BYTES" 20; then
+    tag=$("$JQ" -r 'if (.draft or .prerelease) then empty else (.tag_name // empty) end' "$tmp" 2>/dev/null)
+  fi
+  rm -f "$tmp"
+  latest="${tag#v}"
+  [[ $latest =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || return 0
+
+  available=false
+  version_newer "$latest" "$installed" && available=true
+  write_state updateLatest="$latest" updateAvailable="$available" updateInstalled="$installed"
+
+  if [[ $available == true && $(state_get updateNotified) != "$latest" ]]; then
+    notify "Bing Wallpaper $latest is available" \
+      "Run: omarchy plugin update $PLUGIN_ID" -t 8000
+    write_state updateNotified="$latest"
+  fi
+}
+
 # ------------------------------------------------------------------- fetch
 
 cmd_fetch() {
@@ -1281,6 +1364,9 @@ cmd_fetch() {
      [[ ${SETTINGS[lockScreen]} != true && -n $lock_state && $lock_state != off ]]; then
     sync_lock_screen true
   fi
+
+  # Once a day at most; free on every other tick.
+  check_update
 
   # Cheap path: nothing can have changed yet, the palette mode is the same,
   # and the archive matches. The service ticks often so this has to be
@@ -1513,9 +1599,22 @@ main() {
     next) cmd_next ;;
     install-deps) cmd_install_deps ;;
     lock-screen) sync_lock_screen true ;;
+    check-update)
+      need curl jq
+      check_update 1
+      if [[ ${SETTINGS[updateCheck]} != true ]]; then
+        echo "Update checks are off (updateCheck=false)."
+      elif [[ $(state_get updateAvailable) == true ]]; then
+        echo "$(state_get updateLatest) is available (running $(installed_version)): omarchy plugin update $PLUGIN_ID"
+      elif [[ -n $(state_get updateLatest) ]]; then
+        echo "Up to date ($(installed_version))."
+      else
+        echo "Could not check for updates."
+      fi
+      ;;
     parallax) cmd_parallax "$@" ;;
-    -h | --help | help) sed -n '2,26p'"$0" | sed 's/^# \{0,1\}//' ;;
-    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|backgrounds|next|install-deps|lock-screen|parallax)" ;;
+    -h | --help | help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) fail "unknown command '$cmd' (fetch|apply|archive|status|settings|set|open|backgrounds|next|install-deps|lock-screen|check-update|parallax)" ;;
   esac
 }
 

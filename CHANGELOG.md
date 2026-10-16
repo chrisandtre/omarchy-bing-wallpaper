@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-16
+
+### Added
+
+- **Update notice.** Omarchy plugins only update when their owner runs
+  `omarchy plugin update`, so installs quietly fall behind. Once a day the
+  plugin now asks GitHub for this repository's latest release and, when it is
+  newer than the version running, shows "Version x.y.z is available — run:
+  omarchy plugin update …" in the panel and sends one notification per
+  release. It never downloads or installs anything. Only the tag name is read,
+  and only when it is a plain `x.y.z`; the response is size-capped like Bing's,
+  and a failed request still counts as the day's check. On by default; turn it
+  off with **Tell me about updates** in the panel or `updateCheck=false`.
+- `bing-wallpaper check-update` asks right away.
+
+### Fixed
+
+- `bing-wallpaper help` was broken in 0.6.0 (a missing space in the usage
+  printer).
+
 ## [0.6.0] - 2026-10-10
 
 ### Added

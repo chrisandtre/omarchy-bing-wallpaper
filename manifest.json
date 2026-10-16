@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.chrisandtre.bing-wallpaper",
   "name": "Bing Wallpaper, Theme, Screensaver & Lock Screen",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "Chris Kitson",
   "description": "The Bing image of the day across your whole desktop, new every morning: your wallpaper, a matching theme built from its colors with Aether, your screensaver drawn as ASCII art, and your lock screen (with Lock Screen Explorer). Each part can be switched off.",
   "kinds": [

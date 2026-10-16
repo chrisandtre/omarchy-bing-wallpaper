@@ -68,8 +68,10 @@ different mornings:
 
 ## What it touches
 
-Network access is limited to `https://www.bing.com`. Responses are capped at the
-producer (256 KiB of metadata, 25 MiB per picture, 400 MiB for the backgrounds
+Network access is limited to `https://www.bing.com`, plus one request a day to
+`https://api.github.com` for this repository's latest release number (see
+[Updating](#updating); `updateCheck=false` turns it off). Responses are capped at the
+producer (256 KiB of metadata or release info, 25 MiB per picture, 400 MiB for the backgrounds
 folder) and discarded if they run over, before anything parses them. The story
 link Bing supplies is only opened if it is an https URL on bing.com. The plugin
 writes to `~/.config/omarchy/themes/bing/`, `~/.local/state/bing-wallpaper/`,
@@ -115,6 +117,22 @@ later the first picture is fetched, the **Bing** theme is created under
 Move the widget later with `omarchy bar move io.github.chrisandtre.bing-wallpaper --section right`, and
 disable or remove it from `Omarchy Menu > Setup > Plugins`.
 
+## Updating
+
+Omarchy plugins never update on their own; an installed plugin is a git
+checkout that moves only when you ask:
+
+```bash
+omarchy plugin update io.github.chrisandtre.bing-wallpaper   # shows the diff, asks, fast-forwards
+omarchy restart shell
+```
+
+So you do not have to remember to look, the plugin checks GitHub once a day for
+a newer release and, when there is one, says so in the panel and with a single
+notification. It only reads the version number and never downloads or installs
+anything; the update is still yours to review and run. Turn the check off with
+**Tell me about updates** in the panel or `bing-wallpaper set updateCheck false`.
+
 ## Using it
 
 | Action | How |
@@ -155,6 +173,7 @@ options, so nothing else on your system is modified.
 | `screensaverStyle` | `auto` | `depth` (colour with depth and parallax), `color`, `mono` (plain glyphs), or `auto`: `depth` where Omarchy keeps colour, `mono` where it does not |
 | `screensaverCaption` | `true` | Write the picture's title and place under the art |
 | `screensaverParallax` | `true` | Drift the scene by depth between effects (`depth` style only) |
+| `updateCheck` | `true` | Check GitHub once a day for a newer release and say so in the panel (never updates by itself) |
 | `lockScreen` | `false` | Add the "Bing" design to Lock Screen Explorer and switch to it (see [Lock screen](#lock-screen)) |
 | `showTitle` | `true` | Show the title next to the icon in the bar |
 | `maxTitleChars` | `28` | Truncate long titles in the bar |
@@ -325,7 +344,10 @@ what you would actually get.
 
 For people who like to know before they install:
 
-- **Network:** `www.bing.com` only, for the daily metadata and the image.
+- **Network:** `www.bing.com` for the daily metadata and the image, and
+  `api.github.com/repos/chrisandtre/omarchy-bing-wallpaper/releases/latest` once a
+  day for the update notice (only the tag name is used, and only if it is a plain
+  `x.y.z`; off with `updateCheck=false`).
 - **Writes:** `~/.config/omarchy/themes/bing/` (the generated theme and images),
   `~/.local/state/bing-wallpaper/` (`state.json`, `archive.json`),
   `~/.config/omarchy/lock-designs/Bing.qml` (only with `lockScreen` on), and its own entry in
@@ -366,6 +388,7 @@ bing-wallpaper backgrounds   # open the generated backgrounds folder
 bing-wallpaper next          # when the next check is due
 bing-wallpaper install-deps  # install ImageMagick for the screensaver
 bing-wallpaper lock-screen   # re-apply the lock screen setting (installs and selects the design)
+bing-wallpaper check-update  # ask GitHub now whether a newer release is out
 bing-wallpaper parallax      # drift the screensaver between effects (the service runs this)
 ```
 
